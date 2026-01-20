@@ -1,0 +1,5 @@
+data/
+models/
+slurm/
+checkpoints/
+.venv_ic/
