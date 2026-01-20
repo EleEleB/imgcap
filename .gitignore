@@ -1,6 +1,6 @@
 data/
 models/
-slurm/
+.slurm/
 checkpoints/
 .venv_ic/
 .env/

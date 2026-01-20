@@ -1,15 +1,14 @@
-#!/usr/bin/env bash
-#SBATCH --job-name=ic
+#!/bin/bash
+#SBATCH -J ic
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=1
-#SBATCH --mem=20G
-#SBATCH --time=4:00:00
-#SBATCH --output=./.slurm/%A/%a_output.log
-#SBATCH --error=./.slurm/%A/%a_error.log
+#SBATCH --time=12:00:00
+#SBATCH --mem=64g
 
 start=$(date +%s)
-
-venv_ic/bin/python3 ic_eval4.py
+mkdir -p .slurm
+python src/ic_eval4.py
 
 end=$(date +%s)
 runtime=$((end - start))
