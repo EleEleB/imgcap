@@ -6,7 +6,7 @@ from PIL import Image
 import hashlib
 import random
 
-dataset_path = r"./gz_dataset" # ./ works on both windows and linux
+dataset_path = r"./data/gz_dataset" # ./ works on both windows and linux
 
 #dataset_path = r"./gz_initial_tests" # for testing -----------------------------------------------------------------------------------------------------------
 
@@ -230,8 +230,8 @@ print(f"Number of Testing Instances: {len(dataset_testing)}")
 
 # SAVE DATASETS TO FILE
 
-filename_training = f"TrainingDataset_{lang}.txt"
-filename_testing = f"TestingDataset_{lang}.txt"
+filename_training = f"data/TrainingDataset_{lang}.txt"
+filename_testing = f"data/TestingDataset_{lang}.txt"
 
 save_dataset(filename_training, dataset_training)
 save_dataset(filename_testing, dataset_testing)

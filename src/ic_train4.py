@@ -10,14 +10,11 @@ from transformers import PreTrainedModel
 from transformers.modeling_outputs import BaseModelOutput
 import os
 
-
-
 lang = "it" # en or it
-resume = True # True loads a saved model and continues fine-tuning, False starts from scratch
-model_checkpoint = "./fine_tuned_VEDM_ep17" # path of the model checkpoint to load (only used if the previous line is True)
-save_model_to = "./fine_tuned_VEDM_ep30" # path where to save the fine-tuned model
-num_epochs = 13
-
+resume = False # True loads a saved model and continues fine-tuning, False starts from scratch
+model_checkpoint = "./fine_tuned_VEDM" # path of the model checkpoint to load (only used if the previous line is True)
+num_epochs = 1
+save_model_to = f"./fine_tuned_VEDM" # path where to save the fine-tuned model
 
 # function that imports the dataset from a txt file
 # parameter dataset_path is the file path
@@ -35,8 +32,6 @@ def load_dataset(dataset_path):
             dataset.append({"image_path": temp[0], "caption": temp[1]})
 
     return dataset
-
-
 
 # function that preprocesses the a training instance and puts it in the format the model wants
 # parameter dataset is a list of instances
@@ -60,12 +55,13 @@ def preprocess_example(example):
 
     return {"pixel_values": pixel_values, "labels": labels, "attention_mask": attention_mask}
 
-
 # function that prepares the dataset from filepath to mapping
 # parameter dataset_path is the filepath of the txt file containing the dataset
 # returns the mapped dataset
-def prepare_dataset(dataset_path):
+def prepare_dataset(dataset_path, n = 0):
   data = load_dataset(dataset_path)
+  if n > 0:
+      data = data[:n]
   dataset = Dataset.from_list(data)
 
   # preprocess pictures the way the model wants them
@@ -73,20 +69,13 @@ def prepare_dataset(dataset_path):
 
   return dataset
 
-
-
-print("imports done")  # DEBUGGING
-
-train_dataset_path = f"./TrainingDataset_{lang}.txt"
-eval_dataset_path = f"./TestingDataset_{lang}.txt"
-
-
+train_dataset_path = f"./data/TrainingDataset_{lang}.txt"
+eval_dataset_path = f"./data/TestingDataset_{lang}.txt"
 
 # model part names (also used when continuing to rebuild the model config)
 clip_name = "openai/clip-vit-base-patch32" # English only, but if only used for image it's language-independent
 decoder_name = "ai-forever/mGPT" # multilingual
 #decoder_name = "distilgpt2" # English only ------------ testing only
-
 
 # define adapter
 class VisionAdapter(nn.Module):
@@ -163,7 +152,6 @@ model = VisionEncoderDecoderModel(encoder=encoder, decoder=decoder)
 model.config.encoder_hidden_size = clip_dim # redundant, but left for clarity
 #model.config.encoder_hidden_size = decoder_dim # redundant, but left for clarity NOT CORRECT ANYMORE
 
-
 if resume == True:
     # load clip_processor and tokenizer from the checkpoint (ensures token ids are aligned)
     clip_processor = CLIPProcessor.from_pretrained(model_checkpoint)
@@ -173,7 +161,7 @@ if resume == True:
     state_dict = torch.load(f"{model_checkpoint}/model_state.pt", map_location="cpu")
     model.load_state_dict(state_dict, strict=True)
 
-    print("model weights loaded") # DEBUGGING
+    # print("model weights loaded") # DEBUGGING
 
 else:
     # clip processor and tokenizer
@@ -188,23 +176,19 @@ else:
             else:  # biases (if any)
                 nn.init.zeros_(param) # starts at zero
         
-
 # padding in case the tokenizer doesn't already have it
 if decoder_tokenizer.pad_token is None: # GPT2 has no pad token
     decoder_tokenizer.pad_token = decoder_tokenizer.eos_token # use eos token for the purpose
-
+decoder_tokenizer.padding_side = 'right'
 # make sure the model knows which id represents padding
-model.config.pad_token_id = decoder_tokenizer.pad_token_id
-
-# set the decoder start token ID (required for generation)
-if decoder_tokenizer.bos_token_id is None:  # GPT-like models may not have a BOS token
-    model.config.decoder_start_token_id = decoder_tokenizer.eos_token_id
-else:
-    model.config.decoder_start_token_id = decoder_tokenizer.bos_token_id
-
-
-print("model created and padding fixed")  # DEBUGGING
-
+# model.config.pad_token_id = decoder_tokenizer.pad_token_id
+# # set the decoder start token ID (required for generation)
+# if decoder_tokenizer.bos_token_id is None:  # GPT-like models may not have a BOS token
+#     model.config.decoder_start_token_id = decoder_tokenizer.eos_token_id
+# else:
+#     model.config.decoder_start_token_id = decoder_tokenizer.bos_token_id
+model.config.decoder_start_token_id = decoder_tokenizer.bos_token_id
+# print("model created and padding fixed")  # DEBUGGING
 
 # freeze model parameters
 for param in model.parameters():
@@ -214,26 +198,31 @@ for param in model.parameters():
 for name, param in model.named_parameters():
     if "cross_attention" in name or "crossattention" in name or "cross_attn" in name or "ln_f" in name or "enc_to_dec_proj" in name or "adapter" in name:
         param.requires_grad = True
-        print(f"Trainable: {name}") # DEBUGGING
+        # print(f"Trainable: {name}") # DEBUGGING
     else:
-        print(f"Frozen: {name}") # DEBUGGING
+        # print(f"Frozen: {name}") # DEBUGGING
+        ...
 
-print("model frozen except cross attention")  # DEBUGGING
-
+# print("model frozen except cross attention")  # DEBUGGING
 
 # use gpu if available
 device = "cuda" if torch.cuda.is_available() else "cpu"
 model.to(device)
 
-print("model moved to device")  # DEBUGGING
+total_params = sum(p.numel() for p in model.parameters())
+print('total_params', total_params)
+trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+print('trainable_params', trainable_params)
 
+print(model)
+
+# print("model moved to device")  # DEBUGGING
 
 # PREPARE DATASET
-train_dataset = prepare_dataset(train_dataset_path)
-eval_dataset = prepare_dataset(eval_dataset_path)
+train_dataset = prepare_dataset(train_dataset_path, n = 0)
+eval_dataset = prepare_dataset(eval_dataset_path, n = 0)
 
-print("dataset prepared")  # DEBUGGING
-
+# print("dataset prepared")  # DEBUGGING
 
 training_args = TrainingArguments(
     # model and training settings
@@ -272,10 +261,9 @@ trainer = Trainer(
     callbacks=[EarlyStoppingCallback(early_stopping_patience=2)] # early stop
 )
 
-
 trainer.train()
 
-print("training done")  # DEBUGGING
+# print("training done")  # DEBUGGING
 
 # save model and clip_processor + tokenizer
 #model.save_pretrained(save_model_to) # this saves a "corrupt" config (aka it doesn't save the adapter structure at all)
@@ -284,4 +272,4 @@ torch.save(model.state_dict(), f"{save_model_to}/model_state.pt") # save weights
 clip_processor.save_pretrained(save_model_to)
 decoder_tokenizer.save_pretrained(save_model_to)
 
-print("model saved") # DEBUGGING
+# print("model saved") # DEBUGGING

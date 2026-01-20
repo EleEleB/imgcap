@@ -18,7 +18,7 @@ from sentence_transformers import SentenceTransformer
 
 
 lang = "it" # en or it
-eval_dataset_path = f"./TestingDataset_{lang}.txt"
+eval_dataset_path = f"./data/TestingDataset_{lang}.txt"
 model_checkpoint = "./fine_tuned_VEDM_ep30"
 
 

@@ -9,7 +9,7 @@
 
 start=$(date +%s)
 
-venv_ic/bin/python3 ic_train4.py
+.env/bin/python3 src/ic_train4.py
 
 end=$(date +%s)
 runtime=$((end - start))
