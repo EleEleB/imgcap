@@ -6,28 +6,30 @@ from data_utils import PrecomputedTensorDataset
 from model import PrefixedLLM
 import os
 from sys_utils import get_current_time_string
+import json
 
-lang = "it" # en or it
+train_config = {
+    'clip_name': "openai/clip-vit-base-patch32", # English only, but if only used for image it's language-independent
+    'decoder_name': "ai-forever/mGPT", # multilingual
+    # 'decoder_name': "distilgpt2", # English only ------------ testing only
+    'num_epochs': 1,
+    'lang': "it", # en or it
+    'steps': 1000,
+    'learning_rate': 5e-5,
+    'batch_size_train': 8,
+    'batch_size_eval': 8,
+    'freeze_model': False,
+    'unfreeze_vision_proj': True,
+}
+
 resume = False # True loads a saved model and continues fine-tuning, False starts from scratch
 model_checkpoint = "./models/fine_tuned_VEDM" # path of the model checkpoint to load (only used if the previous line is True)
-num_epochs = 1
 save_model_to = f"./models/fine_tuned_VEDM_{get_current_time_string()}" # path where to save the fine-tuned model
 
-train_dataset_path = f"./data/TrainingDataset_{lang}.txt"
-eval_dataset_path = f"./data/TestingDataset_{lang}.txt"
-
-# model part names (also used when continuing to rebuild the model config)
-clip_name = "openai/clip-vit-base-patch32" # English only, but if only used for image it's language-independent
-decoder_name = "ai-forever/mGPT" # multilingual
-#decoder_name = "distilgpt2" # English only ------------ testing only
-
-# encoder
-clip_encoder = CLIPVisionModel.from_pretrained(clip_name, attn_implementation="eager") # attn_impl is necessary because of retro-compatibility issue
-clip_processor = CLIPProcessor.from_pretrained(clip_name)
-
-# decoder (+ cross attention)
-decoder = AutoModelForCausalLM.from_pretrained(decoder_name)
-decoder_tokenizer = AutoTokenizer.from_pretrained(decoder_name)
+clip_encoder = CLIPVisionModel.from_pretrained(train_config['clip_name'], attn_implementation="eager") # attn_impl is necessary because of retro-compatibility issue
+clip_processor = CLIPProcessor.from_pretrained(train_config['clip_name'])
+decoder = AutoModelForCausalLM.from_pretrained(train_config['decoder_name'])
+decoder_tokenizer = AutoTokenizer.from_pretrained(train_config['decoder_name'])
         
 # instantiate model
 model = PrefixedLLM(encoder=clip_encoder, decoder=decoder)
@@ -38,16 +40,15 @@ if decoder_tokenizer.pad_token is None: # GPT2 has no pad token
 decoder_tokenizer.padding_side = 'right'
 
 # # freeze model parameters
-# for param in model.parameters():
-#     param.requires_grad = False
+if train_config['freeze_model']:
+    for param in model.parameters():
+        param.requires_grad = False
 
-# # unfreeze cross attention parameters and last layer only
-# for name, param in model.named_parameters():
-#     if "vision_text_proj" in name:
-#         param.requires_grad = True
-
-# for name, param in model.decoder.named_parameters():
-#     param.requires_grad = True
+    # # unfreeze cross attention parameters and last layer only
+    if train_config['unfreeze_vision_proj']:
+        for name, param in model.named_parameters():
+            if "vision_text_proj" in name:
+                param.requires_grad = True
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 model.to(device)
@@ -59,23 +60,23 @@ print('trainable_params', trainable_params)
 
 print(model)
 
-train_pt_path = f"./data/train_processed_{lang}.pt"
-eval_pt_path = f"./data/test_processed_{lang}.pt"
+train_pt_path = f"./data/train_processed_{train_config['lang']}.pt"
+eval_pt_path = f"./data/test_processed_{train_config['lang']}.pt"
 
 # Initialize Datasets directly from tensors
 # Note: clip_processor and decoder_tokenizer are no longer needed for dataset creation
 # but are still needed for model initialization.
 train_dataset = PrecomputedTensorDataset(train_pt_path, limit_n=0, shuffle = True, seed = 42)
 eval_dataset = PrecomputedTensorDataset(eval_pt_path, limit_n=0, shuffle = False, seed = 42)
-steps = 1000
+
 training_args = TrainingArguments(
-    max_steps=steps,
-    save_steps=steps,
-    eval_steps=steps,
-    num_train_epochs=num_epochs,                    # number of training epochs --> extend if it's still improving at the end
-    per_device_train_batch_size=8,                  # batch size for training
-    per_device_eval_batch_size=8,                   # batch size for evaluation
-    learning_rate=5e-5,                             # learning rate
+    max_steps=train_config['steps'],
+    save_steps=train_config['steps'],
+    eval_steps=train_config['steps'],
+    num_train_epochs=train_config['num_epochs'],                    # number of training epochs --> extend if it's still improving at the end
+    per_device_train_batch_size=train_config['batch_size_train'],                  # batch size for training
+    per_device_eval_batch_size=train_config['batch_size_eval'],                   # batch size for evaluation
+    learning_rate=train_config['learning_rate'],                             # learning rate
     weight_decay=0.00,                              # weight decay for optimization
     # training enhancements (warmup and mixed-precision training)
     warmup_ratio=0.1,                               # transformers have trouble optimizing without a warm up
@@ -111,6 +112,10 @@ trainer = Trainer(
 trainer.train()
 
 os.makedirs(save_model_to, exist_ok=True)
+json_path = os.path.join(save_model_to, 'train_config.json')
+
+with open(json_path, 'w', encoding='utf8') as f:
+    json.dump(train_config, f, ensure_ascii = False, indent = 4)
 torch.save(model.state_dict(), f"{save_model_to}/model_state.pt") # save weights and parameters
 clip_processor.save_pretrained(save_model_to)
 decoder_tokenizer.save_pretrained(save_model_to)

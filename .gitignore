@@ -4,7 +4,6 @@ models/
 checkpoints/
 .venv_ic/
 .env/
-results/
 *.pt
 fine_tuned_VEDM/
 *.pyc
