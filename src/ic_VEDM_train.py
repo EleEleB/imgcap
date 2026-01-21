@@ -1,15 +1,11 @@
 import torch
-from PIL import Image
-from datasets import Dataset
-from transformers import CLIPVisionModel, CLIPProcessor, CLIPVisionConfig, default_data_collator
+from transformers import CLIPVisionModel, CLIPProcessor, default_data_collator
 from transformers import AutoTokenizer, AutoConfig, AutoModelForCausalLM
 from transformers import VisionEncoderDecoderModel
 from transformers import Trainer, TrainingArguments, EarlyStoppingCallback
 from torch import nn
-from transformers import PreTrainedModel
-from transformers.modeling_outputs import BaseModelOutput
-from data_utils import load_dataset, prepare_dataset, preprocess_example
-from model import VisionAdapter, CLIPWithAdapter
+from lib_data_utils import prepare_dataset
+from lib_model import VisionAdapter, CLIPWithAdapter
 import os
 
 lang = "it" # en or it

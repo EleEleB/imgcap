@@ -2,10 +2,10 @@ import torch
 from transformers import CLIPVisionModel, CLIPProcessor, default_data_collator
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from transformers import Trainer, TrainingArguments, EarlyStoppingCallback
-from data_utils import PrecomputedTensorDataset
-from model import PrefixedLLM
+from lib_data_utils import PrecomputedTensorDataset
+from lib_model import PrefixedLLM
 import os
-from sys_utils import get_current_time_string
+from lib_sys_utils import get_current_time_string
 import json
 
 train_config = {
@@ -23,8 +23,8 @@ train_config = {
 }
 
 resume = False # True loads a saved model and continues fine-tuning, False starts from scratch
-model_checkpoint = "./models/fine_tuned_VEDM" # path of the model checkpoint to load (only used if the previous line is True)
-save_model_to = f"./models/fine_tuned_VEDM_{get_current_time_string()}" # path where to save the fine-tuned model
+model_checkpoint = "./models/prefix_fine_tuned" # path of the model checkpoint to load (only used if the previous line is True)
+save_model_to = f"./models/prefix_fine_tuned_{get_current_time_string()}" # path where to save the fine-tuned model
 
 clip_encoder = CLIPVisionModel.from_pretrained(train_config['clip_name'], attn_implementation="eager") # attn_impl is necessary because of retro-compatibility issue
 clip_processor = CLIPProcessor.from_pretrained(train_config['clip_name'])
@@ -39,12 +39,12 @@ if decoder_tokenizer.pad_token is None: # GPT2 has no pad token
     decoder_tokenizer.pad_token = decoder_tokenizer.eos_token # use eos token for the purpose
 decoder_tokenizer.padding_side = 'right'
 
-# # freeze model parameters
+# freeze model parameters
 if train_config['freeze_model']:
     for param in model.parameters():
         param.requires_grad = False
 
-    # # unfreeze cross attention parameters and last layer only
+    # unfreeze projection parameters
     if train_config['unfreeze_vision_proj']:
         for name, param in model.named_parameters():
             if "vision_text_proj" in name:
@@ -61,11 +61,10 @@ print('trainable_params', trainable_params)
 print(model)
 
 train_pt_path = f"./data/train_processed_{train_config['lang']}.pt"
-eval_pt_path = f"./data/test_processed_{train_config['lang']}.pt"
+eval_pt_path = f"./data/eval_processed_{train_config['lang']}.pt"
 
-# Initialize Datasets directly from tensors
-# Note: clip_processor and decoder_tokenizer are no longer needed for dataset creation
-# but are still needed for model initialization.
+# initialize datasets directly from tensors
+# (clip_processor and decoder_tokenizer are not needed for dataset creation but are still needed for model initialization)
 train_dataset = PrecomputedTensorDataset(train_pt_path, limit_n=0, shuffle = True, seed = 42)
 eval_dataset = PrecomputedTensorDataset(eval_pt_path, limit_n=0, shuffle = False, seed = 42)
 
@@ -73,18 +72,18 @@ training_args = TrainingArguments(
     max_steps=train_config['steps'],
     save_steps=train_config['steps'],
     eval_steps=train_config['steps'],
-    num_train_epochs=train_config['num_epochs'],                    # number of training epochs --> extend if it's still improving at the end
-    per_device_train_batch_size=train_config['batch_size_train'],                  # batch size for training
-    per_device_eval_batch_size=train_config['batch_size_eval'],                   # batch size for evaluation
-    learning_rate=train_config['learning_rate'],                             # learning rate
-    weight_decay=0.00,                              # weight decay for optimization
+    num_train_epochs=train_config['num_epochs'],                        # number of training epochs
+    per_device_train_batch_size=train_config['batch_size_train'],       # batch size for training
+    per_device_eval_batch_size=train_config['batch_size_eval'],         # batch size for evaluation
+    learning_rate=train_config['learning_rate'],                        # learning rate
+    weight_decay=0.00,                                                  # weight decay for optimization
     # training enhancements (warmup and mixed-precision training)
     warmup_ratio=0.1,                               # transformers have trouble optimizing without a warm up
     lr_scheduler_type="linear",                     # use linear decay for the learning rate after warmup
     fp16=True,                                      # use mixed-precision training (requires compatible hardware, but speeds up training)
     # max_grad_norm = 1.0,
     # checkpointing and saving
-    output_dir=f"./checkpoints",                        # output directory for model checkpoints
+    output_dir=f"./checkpoints",                    # output directory for model checkpoints
     save_strategy="steps",                          # save after every epoch (checkpoint)
     eval_strategy="steps",                          # evaluate every epoch
     save_total_limit=3,                             # keep only the last X checkpoints

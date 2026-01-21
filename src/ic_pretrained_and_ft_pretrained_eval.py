@@ -1,7 +1,6 @@
 import torch
 from torch.utils.data import DataLoader
-from transformers import CLIPVisionModel, CLIPProcessor, CLIPVisionConfig, default_data_collator
-from transformers import AutoTokenizer, AutoConfig, AutoModelForCausalLM
+from transformers import AutoTokenizer, default_data_collator
 from transformers import VisionEncoderDecoderModel, ViTFeatureExtractor
 from tqdm import tqdm
 import sacrebleu
@@ -9,17 +8,28 @@ from transformers import CLIPModel
 import torch.nn.functional as F
 import numpy as np
 from sentence_transformers import SentenceTransformer
-from data_utils import load_dataset, prepare_dataset, preprocess_example
-from model import VisionAdapter, CLIPWithAdapter
+from lib_data_utils import prepare_dataset
+import json
 
-lang = "en" # en or it
-eval_dataset_path = f"./data/TestingDataset_{lang}.txt"
+lang = "en" # en
+eval_dataset_path = f"./data/test_{lang}.txt"
 
-model_name = "ydshieh/vit-gpt2-coco-en"
+baseline = False
 
+if baseline == True: # evaluation is performed on the baseline model
+    model_name = "ydshieh/vit-gpt2-coco-en"
+    output_scores_filepath = ("./outputs/pretrained_VEDM_scores.txt")
+    json_path = "./outputs/pretrained_VEDM_captions.json"
+else: # evaluation is performed on the fine-tuned model
+    model_name = "models/ft_pretrained_test"
+    output_scores_filepath = (f"./outputs/{model_name}_VEDM_scores.txt")
+    json_path = f"./outputs/{model_name}_VEDM_captions.json" # for captions
+
+# load model
 feature_extractor = ViTFeatureExtractor.from_pretrained(model_name)
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 model = VisionEncoderDecoderModel.from_pretrained(model_name)
+
 model.eval()
 
 # prepare dataset
@@ -28,6 +38,7 @@ eval_dataset = prepare_dataset(eval_dataset_path, feature_extractor, tokenizer, 
 # use gpu if available
 device = "cuda" if torch.cuda.is_available() else "cpu"
 model.to(device)
+
 
 # GENERATE CANDIDATE CAPTIONS
 
@@ -47,11 +58,11 @@ for batch in tqdm(test_loader, desc="Generating captions"):
     captions = [tokenizer.decode(g, skip_special_tokens=True) for g in generated_captions] # skip_special_tokens ignores padding/eos tokens
     all_captions.extend(captions)
 
+
+
 # EVALUATION
 # ----------
 
-import json
-json_path = 'output.json'
 with open(json_path, 'w', encoding='utf8') as f:
     json.dump(all_captions, f, ensure_ascii = False, indent = 4)
 
@@ -124,10 +135,8 @@ for batch in tqdm(test_loader, desc="Evaluating CLIP similarity"):
 clip_score_median = np.median(clip_score_per_instance)
 ref_clip_score_median = np.median(ref_clip_score_per_instance)
 
-
-scores_filepath = ("./VEDMScores.txt")
-
-with open(scores_filepath, mode="w", encoding="utf-8") as f:
+# write to file
+with open(output_scores_filepath, mode="w", encoding="utf-8") as f:
     # write overall scores
     f.write(f"OVERALL SCORE\n")
     f.write(f"CLIP-Score\tRef-CLIP-Score\tSacrebleu\tChrF++\n")

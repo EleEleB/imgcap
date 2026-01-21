@@ -2,8 +2,8 @@ import torch
 import torch.nn as nn
 from transformers import PreTrainedModel
 from transformers.modeling_outputs import BaseModelOutput
-from transformers import CLIPVisionModel, CLIPProcessor, CLIPVisionConfig, default_data_collator
-from transformers.modeling_outputs import CausalLMOutput, CausalLMOutputWithPast
+from transformers import CLIPVisionConfig
+from transformers.modeling_outputs import CausalLMOutputWithPast
 from torch.nn import CrossEntropyLoss
 
 class PrefixedLLM(nn.Module):
@@ -71,7 +71,7 @@ class PrefixedLLM(nn.Module):
             else:
                 expanded_mask = None
 
-        # 3. Forward pass through Decoder
+        # forward pass through decoder
         outputs = self.decoder(
             inputs_embeds=inputs_embeds,
             attention_mask=expanded_mask,
@@ -82,7 +82,7 @@ class PrefixedLLM(nn.Module):
         
         logits = outputs.logits
 
-        # 7. Calculate Loss
+        # calculate Loss
         loss = None
         if labels is not None:
             # We must handle the alignment between logits and labels.
@@ -93,19 +93,19 @@ class PrefixedLLM(nn.Module):
             # We slice off the last logit.
             shift_logits = logits[..., :-1, :].contiguous()
             
-            # Prepare labels:
-            # 1. Prepend -100 (ignore_index) for the visual prefix length
+            # PREPARE LABELS:
+            # prepend -100 (ignore_index) for the visual prefix length
             prefix_length = image_embeds.shape[1]
             batch_size = labels.shape[0]
             ignore_labels = torch.full((batch_size, prefix_length), -100, device=labels.device, dtype=labels.dtype)
             
-            # 2. Concatenate with text labels
+            # concatenate with text labels
             full_labels = torch.cat([ignore_labels, labels], dim=1)
             
-            # 3. Shift labels: target at t+1
+            # shift labels: target at t+1
             shift_labels = full_labels[..., 1:].contiguous()
 
-            # Flatten and compute CrossEntropy
+            # flatten and compute CrossEntropy
             loss_fct = CrossEntropyLoss()
             loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
 
@@ -114,7 +114,7 @@ class PrefixedLLM(nn.Module):
             logits=logits,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
-            past_key_values=outputs.past_key_values, # Field exists in CausalLMOutputWithPast
+            past_key_values=outputs.past_key_values, # field exists in CausalLMOutputWithPast
         )
 
 def init_decoder_input_ids(eos_token_id, bos_token_id, batch_size):
@@ -135,7 +135,6 @@ def generate(model, tokenizer, pixel_values, max_new_tokens=20, device="cuda"):
     input_ids = torch.zeros((batch_size, 0), dtype=torch.long, device=device)
     attention_mask = torch.zeros((batch_size, 0), dtype=torch.long, device=device)
     
-    # Ensure pixel_values are on the correct device
     pixel_values = pixel_values.to(device)
 
     # 2. Generation Loop

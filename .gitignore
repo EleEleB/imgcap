@@ -1,8 +1,10 @@
+bash/
 data/
 models/
-.slurm/
+outputs/
+slurm/
 checkpoints/
-.venv_ic/
+venv_ic/
 .env/
 *.pt
 fine_tuned_VEDM/

@@ -7,13 +7,14 @@ import hashlib
 import random
 
 dataset_path = r"./data/gz_dataset" # ./ works on both windows and linux
-
 #dataset_path = r"./gz_initial_tests" # for testing -----------------------------------------------------------------------------------------------------------
 
-#lang = "en"
-lang = "it"
+lang = "en"
+#lang = "it"
 
 duplicates_either = False # True: deletes img-caption pair if either is duplicate; False: deletes pair only if both are duplicates
+
+
 
 # function that checks for files in the input_directory
 # parameter input_directory is expected to be a string containing the path of the folder where to search for the input
@@ -52,9 +53,11 @@ else:
     print("Invalid language selected.")
     exit()
 
+
+
+
 # this regex is used to find each single step of the recipe
 regex_single_step = r"[^\.\n\t>]*<[0-9]+>"
-
 
 count_recipes = 0
 count_mismatched_recipes = 0
@@ -96,7 +99,8 @@ for f in listdir(dataset_path):
                             s_pics = natsorted(s_pics) # this orders them correctly
                             
                             # create the final dataset (note, steps numeration starts from 1, picture numeration from 0)
-                            for (s, p) in zip(steps, s_pics):
+                            for (p, s) in zip(s_pics, steps):
+                                s = re.sub(r"’", "'", s) # replace formatted apostropes with unformatted apostrophes
                                 dataset_final.append((join(image_path, p), s))
                             
                         else:
@@ -131,9 +135,7 @@ print(f"Count No Steps: {count_no_steps}.")
 print()
 
 
-    
-
-   
+  
 # DEDUPLICATE PICTURES AND TEXT
 
 # Note: for better efficiency, one of the checks (likely the one for duplicate pictures) could be skipped if the other already returned a positive result
@@ -175,15 +177,14 @@ for (i, el) in enumerate(dataset_final):
     else:
         seen_steps[temp] = 1 # the associated value does not matter, what matters is the text as key for a constant cost lookup
 
-if duplicates_either == True:
-    # remove pair if either the image or the text is duplicate
+if duplicates_either == True: # remove pair if either the image or the text is duplicate
     indexes_to_delete = []
     indexes_to_delete.extend(img_indexes_to_delete)
     indexes_to_delete.extend(txt_indexes_to_delete)
     indexes_to_delete = list(set(indexes_to_delete)) # remove duplicate indexes
     count_duplicates = len(indexes_to_delete) # number of tuples where at least one element is duplicate
-else :
-    # remove if both the image and the text is duplicate
+
+else: # remove if both the image and the text are duplicate
     indexes_to_delete = []
     for i in txt_indexes_to_delete:
         if i in img_indexes_to_delete:
@@ -220,18 +221,25 @@ random.seed(42)
 random.shuffle(dataset_final)
 
 training_percent = 90 # percentage of instances to use for training, the rest is for testing
-upto = round(len(dataset_final)/100*80)
+eval_percent = 5
+upto_train = round(len(dataset_final)/100*training_percent)
+upto_eval = round(len(dataset_final)/100*(training_percent + eval_percent))
 
-dataset_training = dataset_final[:upto+1]
-dataset_testing  = dataset_final[upto+1:]
+dataset_train = dataset_final[:upto_train+1]
+dataset_eval = dataset_final[upto_train+1:upto_eval+1]
+dataset_test = dataset_final[upto_eval+1:]
 
-print(f"Number of Training Instances: {len(dataset_training)}")
-print(f"Number of Testing Instances: {len(dataset_testing)}")
+print(f"Number of Training Instances: {len(dataset_train)}")
+print(f"Number of Eval Instances: {len(dataset_eval)}")
+print(f"Number of Testing Instances: {len(dataset_test)}")
+
 
 # SAVE DATASETS TO FILE
 
-filename_training = f"data/TrainingDataset_{lang}.txt"
-filename_testing = f"data/TestingDataset_{lang}.txt"
+filename_train = f"data/train_{lang}.txt"
+filename_eval = f"data/eval_{lang}.txt"
+filename_test = f"data/test_{lang}.txt"
 
-save_dataset(filename_training, dataset_training)
-save_dataset(filename_testing, dataset_testing)
+save_dataset(filename_train, dataset_train)
+save_dataset(filename_eval, dataset_eval)
+save_dataset(filename_test, dataset_test)

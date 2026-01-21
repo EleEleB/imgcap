@@ -1,22 +1,23 @@
 import torch
 from torch.utils.data import DataLoader
-from transformers import CLIPVisionModel, CLIPProcessor, CLIPVisionConfig, default_data_collator
-from transformers import AutoTokenizer, AutoConfig, AutoModelForCausalLM
+from transformers import CLIPVisionModel, CLIPProcessor, default_data_collator
+from transformers import AutoTokenizer, AutoModelForCausalLM
 from tqdm import tqdm
 import sacrebleu
 from transformers import CLIPModel
 import torch.nn.functional as F
 import numpy as np
 from sentence_transformers import SentenceTransformer
-from data_utils import PrecomputedTensorDataset
-from sys_utils import get_current_time_string
-from model import PrefixedLLM, generate
+from lib_data_utils import PrecomputedTensorDataset
+from lib_model import PrefixedLLM, generate
 
 lang = "it" # en or it
 eval_pt_path = f"./data/test_processed_{lang}.pt"
-model_checkpoint = "./models/fine_tuned_VEDM_2026-01-21--00:42:33"
+model_checkpoint = "./models/prefix_fine_tuned_2026-01-21--00:42:33"
+output_scores_filepath = (f"./results/prefix_scores_{model_checkpoint.split('/')[-1]}.txt")
 
-# model part names (also used when continuing to rebuild the model config)
+
+# model part names (used to rebuild the model config)
 clip_name = "openai/clip-vit-base-patch32" # English only, but if only used fsor image it's language-independent
 decoder_name = "ai-forever/mGPT" # multilingual
 #decoder_name = "distilgpt2" # English only ------------ testing only
@@ -46,6 +47,7 @@ eval_dataset = PrecomputedTensorDataset(eval_pt_path, limit_n = 0, shuffle = Fal
 device = "cuda" if torch.cuda.is_available() else "cpu"
 model.to(device)
 
+
 # GENERATE CANDIDATE CAPTIONS
 
 model.eval()
@@ -56,54 +58,50 @@ test_loader = DataLoader(eval_dataset, batch_size=8, shuffle=False, collate_fn=d
 all_captions = []
 
 for batch in tqdm(test_loader, desc="Generating captions"):
-    # Move batch to device
     pixel_values = batch["pixel_values"].to(device)
     
     # Note: 'attention_mask' from the dataset is for the Training Labels (text).
-    # We do NOT use it here because we are generating new text from scratch.
+    # it is NOT used here because we are generating new text from scratch.
     
     with torch.no_grad():
         generated_ids = generate(
             model=model,
-            tokenizer=decoder_tokenizer, # Passed only to check EOS id
+            tokenizer=decoder_tokenizer, # passed only to check EOS id
             pixel_values=pixel_values,
             max_new_tokens=20,
             device=device
         )
 
-    # Decode
-    # We iterate over the batch of generated_ids
+    # decode (iterate over the batch of generated ids)
     captions = decoder_tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
     all_captions.extend(captions)
 
-# 1. Access the labels tensor directly from the dataset object
-# Note: eval_dataset.labels exists because we defined it in __init__
+# access the labels tensor directly from the dataset object (eval_dataset.labels exists because it was defined it in __init__)
 ref_labels_tensor = eval_dataset.labels.clone()
 
-# 2. Sanitize the labels
-# The labels contain -100 for non-text parts (like image prefix). 
-# We must replace -100 with the pad_token_id before decoding.
+# sanitize the labels ( they contain -100 for non-text parts (like image prefix), which must be replaced with the pad_token before decoding)
 ref_labels_tensor[ref_labels_tensor == -100] = decoder_tokenizer.pad_token_id
 
-# 3. Decode the labels back to text
+# decode the labels back to text
 print("Decoding reference captions...")
 ref_captions_text = decoder_tokenizer.batch_decode(ref_labels_tensor, skip_special_tokens=True)
 
-# ALIASING: Define ref_captions for compatibility with the rest of the script
-ref_captions = ref_captions_text
 
-# 4. Format for BLEU (sacrebleu expects a list of lists for references)
+# EVALUATION
+
+ref_captions = ref_captions_text # for readability in the rest of the script
+
+# format for BLEU (sacrebleu expects a list of lists for references)
 ref_captions_blue = [[caption] for caption in ref_captions]
 
-# Calculate Corpus BLEU
+# calculate overall BLEU
 bleu = sacrebleu.corpus_bleu(all_captions, ref_captions_blue)
 print(f"BLEU score: {bleu.score}")
 
-# Calculate Sentence-level BLEU (Required for the final output loop)
+# calculate sentence-level BLEU
 bleu_per_instance = []
 for capt, ref in zip(all_captions, ref_captions):
-    # sentence_bleu requires the reference as a list of strings
-    score = sacrebleu.sentence_bleu(capt, [ref])
+    score = sacrebleu.sentence_bleu(capt, [ref]) # sentence_bleu requires the reference as a list of strings
     bleu_per_instance.append(score.score)
 
 # ChrF++
@@ -167,9 +165,8 @@ for batch in tqdm(test_loader, desc="Evaluating CLIP similarity"):
 clip_score_median = np.median(clip_score_per_instance)
 ref_clip_score_median = np.median(ref_clip_score_per_instance)
 
-scores_filepath = (f"./results/VEDMScores_{model_checkpoint.split('/')[-1]}.txt")
-
-with open(scores_filepath, mode="w", encoding="utf-8") as f:
+# write to file
+with open(output_scores_filepath, mode="w", encoding="utf-8") as f:
     # write overall scores
     f.write(f"OVERALL SCORE\n")
     f.write(f"CLIP-Score\tRef-CLIP-Score\tSacrebleu\tChrF++\n")
@@ -179,15 +176,7 @@ with open(scores_filepath, mode="w", encoding="utf-8") as f:
     f.write(f"Instance\tGeneratedCaption\tReferenceCaption\tCLIP-Score\tRefCLIP-Score\tSacrebleu\tCharF++\n")
     
     # write scores per instance
-    # FIX: Ensure all variables in zip are defined lists of the same length
-    for i, (gen_capt, ref_capt, sim, ref_sim, bleuscore, chrfscore) in enumerate(zip(
-        all_captions, 
-        ref_captions, 
-        clip_score_per_instance, 
-        ref_clip_score_per_instance, 
-        bleu_per_instance, 
-        chrf_per_instance
-    )):
+    for i, (gen_capt, ref_capt, sim, ref_sim, bleuscore, chrfscore) in enumerate(zip(all_captions, ref_captions, clip_score_per_instance, ref_clip_score_per_instance, bleu_per_instance, chrf_per_instance)):
         f.write(f"{i+1}\t{gen_capt}\t{ref_capt}\t{sim}\t{ref_sim}\t{bleuscore}\t{chrfscore}\n")
 
 print("file saved")

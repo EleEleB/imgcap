@@ -16,8 +16,10 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 
 lang = "it" # en or it
-eval_dataset_path = f"./data/TestingDataset_{lang}.txt"
+eval_dataset_path = f"./data/test_{lang}.txt"
 model_checkpoint = "./fine_tuned_VEDM"
+
+output_scores_filepath = ("./fine_tuned_VEDM_Scores.txt")
 
 # function that imports the dataset from a txt file
 # parameter dataset_path is the file path
@@ -276,9 +278,7 @@ clip_score_median = np.median(clip_score_per_instance)
 ref_clip_score_median = np.median(ref_clip_score_per_instance)
 
 
-scores_filepath = ("./VEDMScores.txt")
-
-with open(scores_filepath, mode="w", encoding="utf-8") as f:
+with open(output_scores_filepath, mode="w", encoding="utf-8") as f:
     # write overall scores
     f.write(f"OVERALL SCORE\n")
     f.write(f"CLIP-Score\tRef-CLIP-Score\tSacrebleu\tChrF++\n")
