@@ -18,12 +18,15 @@ baseline = False
 
 if baseline == True: # evaluation is performed on the baseline model
     model_name = "ydshieh/vit-gpt2-coco-en"
-    output_scores_filepath = ("./outputs/pretrained_VEDM_scores.txt")
-    json_path = "./outputs/pretrained_VEDM_captions.json"
+    output_scores_filepath = ("outputs/pretrained_VEDM_scores.txt")
+    #json_path = "outputs/pretrained_VEDM_captions.json"
+
 else: # evaluation is performed on the fine-tuned model
-    model_name = "models/ft_pretrained_test"
-    output_scores_filepath = (f"./outputs/{model_name}_VEDM_scores.txt")
-    json_path = f"./outputs/{model_name}_VEDM_captions.json" # for captions
+    #model_name = "models/ft_pretrained_partial_1ep"
+    #output_scores_filepath = (f"outputs/ft_pretrained_partial_1ep_VEDM_scores.txt")
+    model_name = "models/ft_pretrained_lora_1ep"
+    output_scores_filepath = (f"outputs/ft_pretrained_lora_1ep_VEDM_scores.txt")
+    #json_path = f"outputs/{model_name}_VEDM_captions.json" # for captions
 
 # load model
 feature_extractor = ViTFeatureExtractor.from_pretrained(model_name)
@@ -33,7 +36,7 @@ model = VisionEncoderDecoderModel.from_pretrained(model_name)
 model.eval()
 
 # prepare dataset
-eval_dataset = prepare_dataset(eval_dataset_path, feature_extractor, tokenizer, n = 10)
+eval_dataset = prepare_dataset(eval_dataset_path, feature_extractor, tokenizer)
 
 # use gpu if available
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -63,8 +66,8 @@ for batch in tqdm(test_loader, desc="Generating captions"):
 # EVALUATION
 # ----------
 
-with open(json_path, 'w', encoding='utf8') as f:
-    json.dump(all_captions, f, ensure_ascii = False, indent = 4)
+# with open(json_path, 'w', encoding='utf8') as f:
+#     json.dump(all_captions, f, ensure_ascii = False, indent = 4)
 
 ref_captions_blue = [[caption] for caption in eval_dataset["caption"]] # bleu wants the reference translation(s) as a list of lists
 ref_captions = [caption for caption in eval_dataset["caption"]] # for everything else

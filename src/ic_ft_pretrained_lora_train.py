@@ -10,6 +10,7 @@ import torch.nn.functional as F
 import numpy as np
 from sentence_transformers import SentenceTransformer
 from lib_data_utils import prepare_dataset
+from peft import LoraConfig, get_peft_model
 
 train_config = {
     "num_epochs": 1,
@@ -19,8 +20,8 @@ train_config = {
 }
 
 resume = False # True loads a saved model and continues fine-tuning, False starts from scratch
-model_checkpoint = "./models/ft_pretrained_partial_1ep" # path of the model checkpoint to load (only used if the previous line is True)
-save_model_to = f"./models/ft_pretrained_partial_1ep" # path where to save the fine-tuned model
+model_checkpoint = "./models/ft_pretrained_lora_1ep" # path of the model checkpoint to load (only used if the previous line is True)
+save_model_to = f"./models/ft_pretrained_lora_1ep" # path where to save the fine-tuned model
 
 lang = "en" # en
 train_dataset_path = f"./data/train_{lang}.txt"
@@ -36,15 +37,25 @@ feature_extractor = ViTFeatureExtractor.from_pretrained(model_name)
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 model = VisionEncoderDecoderModel.from_pretrained(model_name)
 
+# use LoRA (the base model is frozen by default when applying it)
+# (by default the lora matrices are initialized to zero, which here should lead to the least amount of loss of capability from the base model)
+lora_config = LoraConfig(
+    r=8,
+    lora_alpha=16,
+    target_modules=[
+        "attn.c_attn",           # decoder self attention (fluency and style)
+        "crossattention.q_attn", # decoder cross attention (how text queries image features)
+        "crossattention.c_attn", # decoder cross attention (how image features are interepreted)
+        ],
+    lora_dropout=0.05,
+    bias="none", # only trains LoRA A/B
+    task_type="CAUSAL_LM" # decoder is causal
+)
 
-# freeze encoder lower layers (embeddings + layers 0-7. Layers 8-11 remain trainable)
-for name, param in model.encoder.named_parameters():
-    if "embeddings" in name or "layer.0." in name or "layer.1." in name or "layer.2." in name or "layer.3." in name or "layer.4." in name or "layer.5." in name or "layer.6." in name or "layer.7." in name:
-        param.requires_grad = False
+model = get_peft_model(model, lora_config)
 
 for name, param in model.named_parameters():
     print(f"{param.requires_grad}, {name}")
-
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model = model.to(device)
@@ -94,6 +105,9 @@ trainer = Trainer(
 trainer.train()
 
 print("training done")  # DEBUGGING
+
+# merge LoRA parameters into the model (so the eval scrip doesn't need to change)
+model = model.merge_and_unload()
 
 # save model and clip_processor + tokenizer
 model.save_pretrained(save_model_to)
