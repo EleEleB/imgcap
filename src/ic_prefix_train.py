@@ -65,7 +65,7 @@ eval_pt_path = f"./data/eval_processed_{train_config['lang']}.pt"
 
 # initialize datasets directly from tensors
 # (clip_processor and decoder_tokenizer are not needed for dataset creation but are still needed for model initialization)
-train_dataset = PrecomputedTensorDataset(train_pt_path, limit_n=0, shuffle = True, seed = 42)
+train_dataset = PrecomputedTensorDataset(train_pt_path, limit_n=0, shuffle = False, seed = 42)
 eval_dataset = PrecomputedTensorDataset(eval_pt_path, limit_n=0, shuffle = False, seed = 42)
 
 training_args = TrainingArguments(

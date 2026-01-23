@@ -2,7 +2,7 @@ bash/
 data/
 models/
 outputs/
-slurm/
+.slurm/
 checkpoints/
 venv_ic/
 .env/

@@ -14,7 +14,7 @@ import json
 lang = "en" # en
 eval_dataset_path = f"./data/test_{lang}.txt"
 
-baseline = False
+baseline = True
 
 if baseline == True: # evaluation is performed on the baseline model
     model_name = "ydshieh/vit-gpt2-coco-en"
@@ -150,4 +150,3 @@ with open(output_scores_filepath, mode="w", encoding="utf-8") as f:
     # write scores per instance
     for i, (gen_capt, ref_capt, sim, ref_sim, bleuscore, chrfscore) in enumerate(zip(all_captions, ref_captions, clip_score_per_instance, ref_clip_score_per_instance, bleu_per_instance, chrf_per_instance)):
         f.write(f"{i+1}\t{gen_capt}\t{ref_capt}\t{sim}\t{ref_sim}\t{bleuscore.score}\t{chrfscore}\n")
-

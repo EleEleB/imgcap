@@ -9,12 +9,10 @@ import random
 dataset_path = r"./data/gz_dataset" # ./ works on both windows and linux
 #dataset_path = r"./gz_initial_tests" # for testing -----------------------------------------------------------------------------------------------------------
 
-lang = "en"
-#lang = "it"
+# lang = "en"
+lang = "it"
 
 duplicates_either = False # True: deletes img-caption pair if either is duplicate; False: deletes pair only if both are duplicates
-
-
 
 # function that checks for files in the input_directory
 # parameter input_directory is expected to be a string containing the path of the folder where to search for the input
@@ -31,8 +29,6 @@ def get_filepaths(input_directory):
         exit()
     return list_files
 
-
-
 # function that saves the preprocessed dataset to a file
 # parameter output filename is the name of the output file
 # parameter dataset is the dataset (as a list of tuples containing the image filepath and the caption) to be saved
@@ -40,8 +36,6 @@ def save_dataset(output_filename, dataset):
     with open(output_filename, mode="w", encoding="utf-8") as f:
         for el in dataset:
             f.write(el[0] + "\t" + el[1] + "\n")
-
-
 
 # check the language was selected correctly and determine the proper regex for use in the loop below
 # this regex is used to find the portion of the text file that contains the recipe steps
@@ -52,9 +46,6 @@ elif lang == "en":
 else:
     print("Invalid language selected.")
     exit()
-
-
-
 
 # this regex is used to find each single step of the recipe
 regex_single_step = r"[^\.\n\t>]*<[0-9]+>"
@@ -134,8 +125,6 @@ print(f"Count No Recipe File: {count_no_recipe_file}.")
 print(f"Count No Steps: {count_no_steps}.")
 print()
 
-
-  
 # DEDUPLICATE PICTURES AND TEXT
 
 # Note: for better efficiency, one of the checks (likely the one for duplicate pictures) could be skipped if the other already returned a positive result
@@ -202,7 +191,6 @@ if len(indexes_to_delete) != 0:
     for i in indexes_to_delete:
         del dataset_final[i]
 
-
 print(f"Image Duplicates: {count_image_duplicates}")
 print(f"Text Duplicates: {count_text_duplicates}")
 if duplicates_either == True:
@@ -211,9 +199,6 @@ else:
     print(f"Duplicate training instances (both image - text elements are duplicate): {count_duplicates}")
 
 print(f"Final Number of Instances: {len(dataset_final)}")
-
-
-
 
 # SHUFFLE AND DIVIDE TRAINING AND TESTING SET
 
@@ -232,7 +217,6 @@ dataset_test = dataset_final[upto_eval+1:]
 print(f"Number of Training Instances: {len(dataset_train)}")
 print(f"Number of Eval Instances: {len(dataset_eval)}")
 print(f"Number of Testing Instances: {len(dataset_test)}")
-
 
 # SAVE DATASETS TO FILE
 

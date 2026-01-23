@@ -9,22 +9,24 @@ from transformers import CLIPModel
 import torch.nn.functional as F
 import numpy as np
 from sentence_transformers import SentenceTransformer
-from lib_data_utils import prepare_dataset
+from lib_data_utils import prepare_dataset, PrecomputedTensorDataset
 
 train_config = {
-    "num_epochs": 1,
+    "num_epochs": 0,
     "learning_rate": 5e-5,
     "batch_size_train": 8,
-    "batch_size_eval": 8
+    "batch_size_eval": 8,
+    "lang": "en",
 }
 
 resume = False # True loads a saved model and continues fine-tuning, False starts from scratch
-model_checkpoint = "./models/ft_pretrained_partial_1ep" # path of the model checkpoint to load (only used if the previous line is True)
-save_model_to = f"./models/ft_pretrained_partial_1ep" # path where to save the fine-tuned model
+model_checkpoint = f"./models/ft_pretrained_partial_{train_config['num_epochs']}ep" # path of the model checkpoint to load (only used if the previous line is True)
+save_model_to = f"./models/ft_pretrained_partial_{train_config['num_epochs']}ep" # path where to save the fine-tuned model
 
-lang = "en" # en
-train_dataset_path = f"./data/train_{lang}.txt"
-eval_dataset_path = f"./data/eval_{lang}.txt"
+# train_dataset_path = f"./data/train_processed_{train_config['lang']}.pt"
+# eval_dataset_path = f"./data/eval_processed_{train_config['lang']}.pt"
+train_dataset_path = "data/train_processed_en_vit-gpt2-coco-en_vit-gpt2-coco-en.pt"
+eval_dataset_path = "data/eval_processed_en_vit-gpt2-coco-en_vit-gpt2-coco-en.pt"
 
 if resume == False: # start fine-tuning from scratch
     model_name = "ydshieh/vit-gpt2-coco-en"
@@ -36,22 +38,23 @@ feature_extractor = ViTFeatureExtractor.from_pretrained(model_name)
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 model = VisionEncoderDecoderModel.from_pretrained(model_name)
 
-
 # freeze encoder lower layers (embeddings + layers 0-7. Layers 8-11 remain trainable)
-for name, param in model.encoder.named_parameters():
-    if "embeddings" in name or "layer.0." in name or "layer.1." in name or "layer.2." in name or "layer.3." in name or "layer.4." in name or "layer.5." in name or "layer.6." in name or "layer.7." in name:
-        param.requires_grad = False
+# for name, param in model.encoder.named_parameters():
+#     if "embeddings" in name or "layer.0." in name or "layer.1." in name or "layer.2." in name or "layer.3." in name or "layer.4." in name or "layer.5." in name or "layer.6." in name or "layer.7." in name:
+#         param.requires_grad = False
 
-for name, param in model.named_parameters():
-    print(f"{param.requires_grad}, {name}")
+# for name, param in model.named_parameters():
+#     print(f"{param.requires_grad}, {name}")
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model = model.to(device)
 
 # PREPARE DATASET
-train_dataset = prepare_dataset(train_dataset_path, feature_extractor, tokenizer, batched=True)
-eval_dataset = prepare_dataset(eval_dataset_path, feature_extractor, tokenizer, batched=True)
+# train_dataset = prepare_dataset(train_dataset_path, feature_extractor, tokenizer, batched=True)
+# eval_dataset = prepare_dataset(eval_dataset_path, feature_extractor, tokenizer, batched=True)
+train_dataset = PrecomputedTensorDataset(train_dataset_path, limit_n=0, shuffle = True, seed = 42)
+eval_dataset = PrecomputedTensorDataset(eval_dataset_path, limit_n=0, shuffle = False, seed = 42)
 
 
 training_args = TrainingArguments(
@@ -78,6 +81,7 @@ training_args = TrainingArguments(
     report_to="none",                               # disable logging to WandB (and other platforms like TensorBoard)
     logging_dir=f"./logs",                          # directory to save logs
     logging_steps=500,                              # log every 500 steps
+    remove_unused_columns=False,
 )
 
 
