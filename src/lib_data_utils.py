@@ -1,55 +1,42 @@
 from PIL import Image
+from torch.utils.data import Dataset as TorchDataset
 from datasets import Dataset
 import torch
 
 # class that loads pre-computed tensors from a .pt file with optional deterministic shuffling.
-class PrecomputedTensorDataset(Dataset):
-
+class PrecomputedTensorDataset(TorchDataset):
     def __init__(self, pt_file_path, limit_n=0, shuffle=False, seed=42):
-        print(f"Loading tensors from {pt_file_path}...")
-        data = torch.load(pt_file_path, map_location="cpu") # load to CPU RAM first
-        
-        # extract tensors
+        data = torch.load(pt_file_path, map_location="cpu")
+        # decoder_attention_mask = data['decoder_attention_mask']
         pixel_values = data["pixel_values"]
         labels = data["labels"]
-        attention_mask = data["attention_mask"]
-        
-        total_samples = len(labels)
 
-        # apply deterministic shuffling
+        n = len(labels)
         if shuffle:
-            generator = torch.Generator()
-            generator.manual_seed(seed)
-            permutation = torch.randperm(total_samples, generator=generator)
-            
-            pixel_values = pixel_values[permutation]
-            labels = labels[permutation]
-            attention_mask = attention_mask[permutation]
-        
-        # apply limit_n (truncation during testing)
+            g = torch.Generator().manual_seed(seed)
+            perm = torch.randperm(n, generator=g)
+            # # decoder_attention_mask = decoder_attention_mask[perm]
+            pixel_values = pixel_values[perm]
+            labels = labels[perm]
+
         if limit_n > 0:
-            self.pixel_values = pixel_values[:limit_n]
-            self.labels = labels[:limit_n]
-            self.attention_mask = attention_mask[:limit_n]
-        else:
-            self.pixel_values = pixel_values
-            self.labels = labels
-            self.attention_mask = attention_mask
-            
-        self.length = len(self.labels)
-        print(f"Loaded {self.length} samples (Shuffle={shuffle}, Seed={seed}).")
+            # # decoder_attention_mask = decoder_attention_mask[:limit_n]
+            pixel_values = pixel_values[:limit_n]
+            labels = labels[:limit_n]
+
+        # self.decoder_attention_mask = decoder_attention_mask
+        self.pixel_values = pixel_values
+        self.labels = labels
 
     def __len__(self):
-        return self.length
+        return len(self.labels)
 
     def __getitem__(self, idx):
-        # Returns dict strictly matching the Trainer expects
         return {
-            "pixel_values": self.pixel_values[idx],
-            "labels": self.labels[idx],
-            "attention_mask": self.attention_mask[idx]
+        "pixel_values": self.pixel_values[idx],
+        "labels": self.labels[idx],
+        # "decoder_attention_mask": self.decoder_attention_mask[idx],
         }
-
 
 # function that imports the dataset from a txt file
 # parameter dataset_path is the file path

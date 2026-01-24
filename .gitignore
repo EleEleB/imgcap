@@ -10,3 +10,4 @@ venv_ic/
 fine_tuned_VEDM/
 *.pyc
 .vscode/
+results/
