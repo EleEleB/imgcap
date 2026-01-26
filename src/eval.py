@@ -14,7 +14,7 @@ import json
 lang = "en" # en
 eval_dataset_path = f"./data/test_{lang}.txt"
 
-model_name = "./models/vit-gpt2-coco-en_2026-01-24--04-39-37"
+model_name = "./models/vit-gpt2-coco-en_2026-01-26--04-50-56"
 # model_name = "ydshieh/vit-gpt2-coco-en"
 
 # load model
@@ -32,14 +32,11 @@ eval_dataset = prepare_dataset(eval_dataset_path, feature_extractor, tokenizer, 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 model.to(device)
 
-model.decoder_start_token_id = tokenizer.cls_token_id
-model.pad_token_id = tokenizer.pad_token_id
-
 model.eval()
 batch_size = 8
 test_loader = DataLoader(eval_dataset, batch_size=batch_size, shuffle=False, collate_fn=default_data_collator)
-
 all_captions = []
+
 for batch in tqdm(test_loader, desc="Generating captions"):
     # get pixel values and move to device
     pixel_values = batch["pixel_values"].to(device)

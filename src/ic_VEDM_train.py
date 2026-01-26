@@ -5,7 +5,7 @@ from transformers import VisionEncoderDecoderModel
 from transformers import Trainer, TrainingArguments, EarlyStoppingCallback
 from torch import nn
 from lib_data_utils import prepare_dataset
-from lib_model import VisionAdapter, CLIPWithAdapter
+from lib_model import VisionAdapter, CLIPWithAdapter, print_params
 import os
 
 lang = "it" # en or it
@@ -93,12 +93,7 @@ for name, param in model.named_parameters():
 # use gpu if available
 device = "cuda" if torch.cuda.is_available() else "cpu"
 model.to(device)
-
-total_params = sum(p.numel() for p in model.parameters())
-print('total_params', total_params)
-trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-print('trainable_params', trainable_params)
-
+print_params(model)
 print(model)
 
 # print("model moved to device")  # DEBUGGING

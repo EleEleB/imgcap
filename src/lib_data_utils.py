@@ -7,7 +7,7 @@ import torch
 class PrecomputedTensorDataset(TorchDataset):
     def __init__(self, pt_file_path, limit_n=0, shuffle=False, seed=42):
         data = torch.load(pt_file_path, map_location="cpu")
-        # decoder_attention_mask = data['decoder_attention_mask']
+        attention_mask = data['attention_mask']
         pixel_values = data["pixel_values"]
         labels = data["labels"]
 
@@ -15,16 +15,16 @@ class PrecomputedTensorDataset(TorchDataset):
         if shuffle:
             g = torch.Generator().manual_seed(seed)
             perm = torch.randperm(n, generator=g)
-            # # decoder_attention_mask = decoder_attention_mask[perm]
+            attention_mask = attention_mask[perm]
             pixel_values = pixel_values[perm]
             labels = labels[perm]
 
         if limit_n > 0:
-            # # decoder_attention_mask = decoder_attention_mask[:limit_n]
+            attention_mask = attention_mask[:limit_n]
             pixel_values = pixel_values[:limit_n]
             labels = labels[:limit_n]
 
-        # self.decoder_attention_mask = decoder_attention_mask
+        self.attention_mask = attention_mask
         self.pixel_values = pixel_values
         self.labels = labels
 
@@ -35,7 +35,7 @@ class PrecomputedTensorDataset(TorchDataset):
         return {
         "pixel_values": self.pixel_values[idx],
         "labels": self.labels[idx],
-        # "decoder_attention_mask": self.decoder_attention_mask[idx],
+        "decoder_attention_mask": self.attention_mask[idx],
         }
 
 # function that imports the dataset from a txt file

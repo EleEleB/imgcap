@@ -191,6 +191,17 @@ def generate(model, tokenizer, pixel_values, max_new_tokens=20, device="cuda"):
                 
     return input_ids
 
+def print_trainable_parameters(model):
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            print(name)
+
+def print_params(model):
+    total_params = sum(p.numel() for p in model.parameters())
+    print('total_params', total_params)
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print('trainable_params', trainable_params)
+
 # define adapter
 class VisionAdapter(nn.Module):
     def __init__(self, clip_dim, decoder_dim, reduction=4):

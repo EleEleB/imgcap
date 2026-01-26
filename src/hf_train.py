@@ -17,13 +17,14 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 from lib_data_utils import prepare_dataset, PrecomputedTensorDataset
 from lib_sys_utils import get_current_time_string
+from lib_model import print_params, print_trainable_parameters
 import os
 import json
 
 train_config = {
     "num_epochs": 3,
     "num_steps": 1000,
-    "learning_rate": 5e-5,
+    "learning_rate": 1e-5,
     "batch_size_train": 8,
     "batch_size_eval": 8,
     "lang": "en",
@@ -51,9 +52,20 @@ if tokenizer.pad_token is None:
     tokenizer.pad_token = tokenizer.eos_token
 model = VisionEncoderDecoderModel.from_pretrained(model_name)
 
+for name, p in model.decoder.named_parameters():
+    if "crossattention" in name:
+        p.requires_grad = True
+    else:
+        p.requires_grad = False
+
+for name, p in model.encoder.named_parameters():
+    p.requires_grad = True
+
+print_trainable_parameters(model)
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model = model.to(device)
-
+print_params(model)
 # PREPARE DATASET
 # train_dataset = prepare_dataset(train_dataset_path, feature_extractor, tokenizer, batched=True)
 # eval_dataset = prepare_dataset(eval_dataset_path, feature_extractor, tokenizer, batched=True)
