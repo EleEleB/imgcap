@@ -4,13 +4,25 @@ from transformers import PreTrainedModel
 from transformers.modeling_outputs import BaseModelOutput
 from transformers import CLIPVisionConfig
 from transformers.modeling_outputs import CausalLMOutputWithPast
+from transformers.generation.configuration_utils import GenerationConfig
+from transformers.modeling_utils import PreTrainedModel
+from transformers.configuration_utils import PretrainedConfig
 from torch.nn import CrossEntropyLoss
 
-class PrefixedLLM(nn.Module):
+class PrefixedLLMConfig:
     def __init__(self, encoder, decoder):
-        super().__init__()
+        self.encoder = encoder.config
+        self.decoder = decoder.config
+
+class PrefixedLLM(PreTrainedModel):
+    def __init__(self, encoder, decoder):
+        super().__init__(PretrainedConfig())
         self.encoder = encoder
+        self.config.encoder = encoder.config
         self.decoder = decoder
+        self.config.decoder = decoder.config
+        # self.config = PrefixedLLMConfig(encoder, decoder)
+        self.generation_config = GenerationConfig()
         # Project visual features to LLM dimension
         self.vision_text_proj = nn.Linear(self.encoder.config.hidden_size, self.decoder.config.hidden_size)
 
@@ -20,94 +32,28 @@ class PrefixedLLM(nn.Module):
     def set_input_embeddings(self, value):
         self.decoder.set_input_embeddings(value)
 
-    def forward(self, input_ids=None, pixel_values=None, attention_mask=None, labels=None, past_key_values=None, **kwargs):
-        # 1. Fallback: Recover input_ids from labels if missing
-        if input_ids is None:
-            if labels is None:
-                raise ValueError("Forward pass requires either 'input_ids' or 'labels'.")
-            
-            # Clone labels to create input_ids
-            input_ids = labels.clone()
-            
-            # Sanitize: Replace -100 (ignore_index) with a valid token ID.
-            # Note: We use the pad_token_id. If not defined, default to 0.
-            pad_token_id = self.decoder.config.pad_token_id if self.decoder.config.pad_token_id is not None else 0
-            
-            # Mask replacement
-            input_ids[input_ids == -100] = pad_token_id
+    def prepare_decoder_input_ids_from_labels(self, labels: torch.Tensor):
+        return shift_tokens_right(labels, self.config.pad_token_id, self.config.decoder_start_token_id)
 
-        # 2. Check if we are in "generation mode" (cached state)
-        if past_key_values is not None:
-            # The prefix and previous tokens are already cached.
-            # Embed only the current text tokens.
-            inputs_embeds = self.decoder.get_input_embeddings()(input_ids)
-            
-            # In generation mode, the mask is usually updated internally or passed as 1s.
-            # We use the provided attention_mask directly.
-            expanded_mask = attention_mask 
-        else:
-            # Step 0 (First pass) or Training: Encode Image + Text
+    def forward(self, input_ids=None, pixel_values=None, attention_mask=None):
 
-            # Encode Images
-            vision_output = self.encoder(pixel_values)
-            image_embeds = self.vision_text_proj(vision_output.last_hidden_state)
-            
-            # Embed Text
-            text_embeds = self.decoder.get_input_embeddings()(input_ids)
-            
-            # Concatenate: [Prefix; Text]
-            inputs_embeds = torch.cat([image_embeds, text_embeds], dim=1)
-            
-            # Expand Attention Mask
-            if attention_mask is not None:
-                batch_size = attention_mask.shape[0]
-                prefix_length = image_embeds.shape[1]
-                
-                # Create prefix mask (Batch, Num_Patches)
-                prefix_mask = torch.ones((batch_size, prefix_length), device=attention_mask.device)
-                
-                # Concatenate: [1...1; Text_Mask]
-                expanded_mask = torch.cat([prefix_mask, attention_mask], dim=1)
-            else:
-                expanded_mask = None
+        vision_output = self.encoder(pixel_values)
+        image_embeds = self.vision_text_proj(vision_output.last_hidden_state)
+        image_embeds_len = image_embeds.shape[1]
+        # Embed Text
+        text_embeds = self.decoder.get_input_embeddings()(input_ids)
+        
+        # Concatenate: [Prefix; Text]
+        inputs_embeds = torch.cat([image_embeds, text_embeds], dim=1)
 
         # forward pass through decoder
         outputs = self.decoder(
             inputs_embeds=inputs_embeds,
-            attention_mask=expanded_mask,
-            past_key_values=past_key_values,
-            return_dict=True,
-            **kwargs 
+            attention_mask=attention_mask,
         )
-        
-        logits = outputs.logits
+        logits = outputs.logits[:, image_embeds_len:]
 
-        # calculate Loss
         loss = None
-        if labels is not None:
-            # We must handle the alignment between logits and labels.
-            # The 'logits' include the image prefix, but 'labels' do not.
-            # We usually ignore the loss on the image prefix prediction.
-            
-            # Shift logits: Prediction at t matches label at t+1
-            # We slice off the last logit.
-            shift_logits = logits[..., :-1, :].contiguous()
-            
-            # PREPARE LABELS:
-            # prepend -100 (ignore_index) for the visual prefix length
-            prefix_length = image_embeds.shape[1]
-            batch_size = labels.shape[0]
-            ignore_labels = torch.full((batch_size, prefix_length), -100, device=labels.device, dtype=labels.dtype)
-            
-            # concatenate with text labels
-            full_labels = torch.cat([ignore_labels, labels], dim=1)
-            
-            # shift labels: target at t+1
-            shift_labels = full_labels[..., 1:].contiguous()
-
-            # flatten and compute CrossEntropy
-            loss_fct = CrossEntropyLoss()
-            loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
 
         return CausalLMOutputWithPast(
             loss=loss,
@@ -116,6 +62,23 @@ class PrefixedLLM(nn.Module):
             attentions=outputs.attentions,
             past_key_values=outputs.past_key_values, # field exists in CausalLMOutputWithPast
         )
+
+def shift_tokens_right(input_ids: torch.Tensor, pad_token_id: int, decoder_start_token_id: int):
+    """
+    Shift input ids one token to the right.
+    """
+    shifted_input_ids = input_ids.new_zeros(input_ids.shape)
+    shifted_input_ids[:, 1:] = input_ids[:, :-1].clone()
+    if decoder_start_token_id is None:
+        raise ValueError("Make sure to set the decoder_start_token_id attribute of the model's configuration.")
+    shifted_input_ids[:, 0] = decoder_start_token_id
+
+    if pad_token_id is None:
+        raise ValueError("Make sure to set the pad_token_id attribute of the model's configuration.")
+    # replace possible -100 values in labels by `pad_token_id`
+    shifted_input_ids.masked_fill_(shifted_input_ids == -100, pad_token_id)
+
+    return shifted_input_ids
 
 def init_decoder_input_ids(eos_token_id, bos_token_id, batch_size):
     eos = torch.tensor([eos_token_id] * batch_size).unsqueeze(-1)

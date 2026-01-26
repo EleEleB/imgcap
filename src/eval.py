@@ -19,9 +19,9 @@ test_dataset_path = f"./data/test_{lang}.txt"
 def main(args):
     model_name = args.model
 
-    json_path = os.path.join(model_name, 'train_config.json')
+    train_config_path = os.path.join(model_name, 'train_config.json')
     
-    with open(json_path, 'r', encoding='utf8') as f:
+    with open(train_config_path, 'r', encoding='utf8') as f:
         train_config = json.load(f)
 
     # load model

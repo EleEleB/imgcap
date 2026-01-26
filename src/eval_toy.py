@@ -13,17 +13,26 @@ from transformers import (
     default_data_collator,
 )
 from lib_data_utils import PrecomputedTensorDataset
+from lib_model import PrefixedLLM
 
 # --- Configuration for Toy Setting ---
 CONFIG = {
     "data_path": "data/toy_colors.pt",
     "batch_size_eval": 8,
-    "model_path": "./models/vit-gpt2-coco-en_2026-01-26--11-18-56",
     "output_file": "eval_predictions.json",
     "device": "cuda" if torch.cuda.is_available() else "cpu",
     "max_new_tokens": 16,
     "num_beams": 1
 }
+
+# model_path = "./models/vit-gpt2-coco-en_2026-01-26--11-18-56",
+model_path = "./models/clip-vit-base-patch32_mGPT_2026-01-26--12-23-39", # prefix model
+
+train_config_path = os.path.join(model_path, 'train_config.json')
+
+with open(train_config_path, 'r', encoding='utf8') as f:
+    train_config = json.load(f)
+
 
 def _norm(s: str) -> str:
     """Normalizes string by lowering case and collapsing whitespace."""
@@ -136,12 +145,15 @@ def evaluate_and_save_predictions(
 
 def main():
     # 1. Load Artifacts
-    print(f"Loading model from: {CONFIG['model_path']}")
+    print(f"Loading model from: {model_path}")
     try:
-        tokenizer = AutoTokenizer.from_pretrained(CONFIG['model_path'])
-        model = VisionEncoderDecoderModel.from_pretrained(CONFIG['model_path'])
+        tokenizer = AutoTokenizer.from_pretrained(model_path)
+        if CONFIG['model_type'] == 'encoder-decoder':
+            model = VisionEncoderDecoderModel.from_pretrained(model_path)
+        elif CONFIG['model_type'] == 'prefix':
+            model = PrefixedLLM.from_pretrained(model_path)
         # Feature extractor is loaded but typically handled via the precomputed dataset or processor
-        # feature_extractor = ViTImageProcessor.from_pretrained(CONFIG['model_path'])
+        # feature_extractor = ViTImageProcessor.from_pretrained(model_path)
     except OSError as e:
         print(f"Error loading model: {e}")
         print("Ensure 'model_path' in CONFIG points to a valid checkpoint directory.")
@@ -175,7 +187,7 @@ def main():
     )
 
     # 4. Execute Evaluation
-    output_path = os.path.join(CONFIG['model_path'], CONFIG['output_file'])
+    output_path = os.path.join(model_path, CONFIG['output_file'])
     metrics, path = evaluate_and_save_predictions(
         model=model,
         dataloader=eval_loader,

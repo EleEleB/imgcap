@@ -28,6 +28,7 @@ train_config = {
     "batch_size_train": 8,
     "batch_size_eval": 8,
     "lang": "en",
+    "model_type": "encoder-decoder",
 }
 
 model_checkpoint = f"./models/{get_current_time_string()}" # path of the model checkpoint to load (only used if the previous line is True)
