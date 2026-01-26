@@ -22,7 +22,7 @@ for split in ['train', 'eval', 'test']:
     print("Initializing processors...")
     
     model_combo = f"{encoder_name.split('/')[-1]}_{decoder_name.split('/')[-1]}"
-    output_path = f"./data/{split}_processed_{lang}_{model_combo}.pt"
+    output_path = f"./data/gz_tensors/{split}_{lang}.pt"
 
     # load raw data
     print(f"Loading raw data from {dataset_path}...")
