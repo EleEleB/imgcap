@@ -13,7 +13,8 @@ COLOR_MAP = {
     "magenta": (255, 0, 255),
 }
 
-model_name = "ydshieh/vit-gpt2-coco-en"
+#model_name = "ydshieh/vit-gpt2-coco-en"
+model_name = "openai/clip-vit-base-patch32"
 
 def make_color_image_np(color_name: str, size: int = 224) -> np.ndarray:
     rgb = np.array(COLOR_MAP[color_name], dtype=np.uint8)

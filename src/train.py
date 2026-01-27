@@ -20,10 +20,12 @@ import os
 import json
 
 train_config = {
-    # "data_path": "data/gz_tensors/train_en.pt",
-    "data_path": "data/toy_colors.pt",
+    #"train_data_path": "data/gz_tensors/vit-gpt2-coco-en/train_en.pt",
+    #"eval_data_path": "data/gz_tensors/vit-gpt2-coco-en/eval_en.pt",
+    "train_data_path": "data/toy_colors_clip-vit-base-patch32.pt",
+    "eval_data_path": "data/toy_colors_clip-vit-base-patch32.pt",
     "num_epochs": 3,
-    "num_steps": -1,
+    "num_steps": -1, # < 0 to do the full epochs
     "learning_rate": 5e-5,
     "batch_size_train": 8,
     "batch_size_eval": 8,
@@ -42,7 +44,8 @@ save_model_to = f"./models/{model_name.split('/')[-1]}_{get_current_time_string(
 feature_extractor = ViTImageProcessor.from_pretrained(model_name)
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-train_dataset = PrecomputedTensorDataset(train_config['data_path'], limit_n=0, shuffle = True, seed = 42)
+train_dataset = PrecomputedTensorDataset(train_config['train_data_path'], limit_n=0, shuffle = True, seed = 42)
+eval_dataset = PrecomputedTensorDataset(train_config['eval_data_path'], limit_n=0, shuffle = True, seed = 42)
 
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 model = VisionEncoderDecoderModel.from_pretrained(model_name)
@@ -65,7 +68,7 @@ model.generation_config.eos_token_id = tokenizer.eos_token_id
 
 
 train_loader = DataLoader(train_dataset, batch_size=train_config['batch_size_train'], shuffle=True, collate_fn=default_data_collator)
-# eval_dataset = PrecomputedTensorDataset(eval_dataset_path, limit_n=0, shuffle = False, seed = 42)
+eval_loader = DataLoader(eval_dataset, batch_size=train_config['batch_size_eval'], shuffle=True, collate_fn=default_data_collator)
 
 optimizer = AdamW(params = model.parameters(), lr = train_config['learning_rate'])
 loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
@@ -74,8 +77,16 @@ train_iter = iter(train_loader)
 if train_config['num_steps'] < 0:
     train_config['num_steps'] = len(train_dataset) * train_config['num_epochs']
 
-tbar = tqdm(total=train_config['num_steps'])
+tbar = tqdm(total=train_config['num_steps']) # progress bar
 
+# evaluation and early stopping
+eval_every = train_config['num_steps'] // train_config['num_epochs'] # validate once per epoch
+best_val_loss = float("inf")
+bad_evals = 0
+patience = 2
+os.makedirs(save_model_to, exist_ok=True) # create the folder where to save the model
+
+# training loop
 for step in range(train_config['num_steps']):
     try:
         batch = next(train_iter)
@@ -112,17 +123,61 @@ for step in range(train_config['num_steps']):
     # Flatten for CrossEntropy
     # Logits: (Batch * Seq_Len, Vocab)
     # Labels: (Batch * Seq_Len)
+    # compute loss
     loss = loss_fct(logits.reshape(-1, logits.size(-1)), labels.reshape(-1))
+
+    # backpropagation
     loss.backward()
     optimizer.step()
 
+    # update progress bar
     tbar.set_description(f"Loss: {loss.item():.3f}")
     tbar.update(1)
 
-# save model and clip_processor + tokenizer
-model.save_pretrained(save_model_to)
-feature_extractor.save_pretrained(save_model_to)
-tokenizer.save_pretrained(save_model_to)
+    # validation
+    if step % eval_every == 0 and step != 0:
+        model.eval()
+        val_loss = 0.0
+        n_batches = 0
+        with torch.no_grad():
+            for batch in eval_loader:
+                batch = {k: v.to(device) for k, v in batch.items()}
+
+                labels = batch["labels"]
+                decoder_input_ids = model.prepare_decoder_input_ids_from_labels(labels)
+
+                outputs = model(
+                    pixel_values=batch["pixel_values"],
+                    decoder_input_ids=decoder_input_ids,
+                    attention_mask=batch.get("attention_mask", None),
+                )
+
+                logits = outputs.logits
+                loss = loss_fct(logits.reshape(-1, logits.size(-1)), labels.reshape(-1))
+
+                val_loss += loss.item()
+                n_batches += 1
+
+        val_loss /= n_batches
+        model.train() # reset training mode
+
+        print(f"[step {step}] val_loss = {val_loss:.3f}")
+
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            bad_evals = 0
+
+            # Save the best model so far
+            # save model and clip_processor + tokenizer
+            model.save_pretrained(save_model_to)
+            feature_extractor.save_pretrained(save_model_to)
+            tokenizer.save_pretrained(save_model_to)
+        else:
+            bad_evals += 1
+            if bad_evals >= patience:
+                print("Early stopping.")
+                break
+
 
 print(f"model saved at: {save_model_to}") # DEBUGGING
 

@@ -4,25 +4,34 @@ from transformers import CLIPProcessor, AutoTokenizer, ViTImageProcessor
 from tqdm import tqdm
 from lib_data_utils import load_dataset
 
-encoder_name = "ydshieh/vit-gpt2-coco-en"
-decoder_name = encoder_name
+encoder_name = "openai/clip-vit-base-patch32"
+#encoder_name = "ydshieh/vit-gpt2-coco-en"
 
+# initialize processors
+print("Initializing processors...")
+if encoder_name == 'openai/clip-vit-base-patch32':
+    img_processor = CLIPProcessor.from_pretrained(encoder_name)
+    decoder_name = "ai-forever/mGPT"
+    model_combo = f"{encoder_name.split('/')[-1]}_mGPT"
+    lang = "it"
+elif encoder_name == 'ydshieh/vit-gpt2-coco-en':
+    img_processor = ViTImageProcessor.from_pretrained(encoder_name)
+    decoder_name = encoder_name
+    model_combo = f"{encoder_name.split('/')[-1]}"
+    lang = "en"
+
+# initialize tokenizer
 tokenizer = AutoTokenizer.from_pretrained(decoder_name)
-img_processor = ViTImageProcessor.from_pretrained(encoder_name)
 
 # handle padding token if missing
 if tokenizer.pad_token is None:
     tokenizer.pad_token = tokenizer.eos_token
-lang = "en"
 
+# preprocess dataset only once and save them as tensors to speed up loading during training
 for split in ['train', 'eval', 'test']:
-    # split = "test" # "test", "train", "eval"
     dataset_path = f"./data/{split}_{lang}.txt"
-
-    print("Initializing processors...")
     
-    model_combo = f"{encoder_name.split('/')[-1]}_{decoder_name.split('/')[-1]}"
-    output_path = f"./data/gz_tensors/{split}_{lang}.pt"
+    output_path = f"./data/gz_tensors/{model_combo}/{split}_{lang}.pt"
 
     # load raw data
     print(f"Loading raw data from {dataset_path}...")
@@ -42,19 +51,21 @@ for split in ['train', 'eval', 'test']:
             
             # NOTE: here we need to add the eos token. the tokenizer won't do it on its own
             caption = example["caption"]
-            caption = caption + tokenizer.eos_token
+            if encoder_name == 'ydshieh/vit-gpt2-coco-en': 
+                caption = caption + tokenizer.eos_token
             
             encodings = tokenizer(
                 caption, 
-                padding="max_length", 
-                max_length=64, 
+                padding="max_length",
+                max_length=64,
                 truncation=True, 
                 return_tensors="pt"
             )
+            
             labels = encodings.input_ids[0]
             attn_mask = encodings.attention_mask[0]
             labels[attn_mask == 0] = -100
-
+            
             pixel_values_list.append(p_values)
             labels_list.append(labels)
             attn_mask_list.append(attn_mask)

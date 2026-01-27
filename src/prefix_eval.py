@@ -12,36 +12,39 @@ from lib_data_utils import PrecomputedTensorDataset
 from lib_model import PrefixedLLM, generate
 
 lang = "it" # en or it
-eval_pt_path = f"./data/test_processed_{lang}.pt"
-model_checkpoint = "./models/prefix_fine_tuned_2026-01-21--00:42:33"
+test_pt_path = f"./data/gz_tensors/clip-vit-base-patch32_mGPT/test_{lang}.pt"
+model_checkpoint = "./models/clip-vit-base-patch32_mGPT_2026-01-27--19-39-56"
 output_scores_filepath = (f"./results/prefix_scores_{model_checkpoint.split('/')[-1]}.txt")
 
 
-# model part names (used to rebuild the model config)
+# reinstantiate custom model
 clip_name = "openai/clip-vit-base-patch32" # English only, but if only used fsor image it's language-independent
 decoder_name = "ai-forever/mGPT" # multilingual
 #decoder_name = "distilgpt2" # English only ------------ testing only
-
-# encoder
-clip_encoder = CLIPVisionModel.from_pretrained(clip_name, attn_implementation="eager") # attn_impl is necessary because of retro-compatibility issue
-clip_processor = CLIPProcessor.from_pretrained(clip_name)
-
-# decoder (+ cross attention)
-decoder = AutoModelForCausalLM.from_pretrained(decoder_name)
-decoder_tokenizer = AutoTokenizer.from_pretrained(decoder_name)
-
+clip_encoder = CLIPVisionModel.from_pretrained(clip_name, attn_implementation="eager")
+decoder = AutoModelForCausalLM.from_pretrained(decoder_name, attn_implementation="eager")
 model = PrefixedLLM(encoder=clip_encoder, decoder=decoder)
 
 # load model weights from checkpoint
-state_dict = torch.load(f"{model_checkpoint}/model_state.pt", map_location="cpu")
+state_dict = torch.load(f"{model_path}/model_state.pt", map_location="cpu")
 model.load_state_dict(state_dict, strict=True)
 
-# padding in case the tokenizer doesn't already have it
-if decoder_tokenizer.pad_token is None: # GPT2 has no pad token
-    decoder_tokenizer.pad_token = decoder_tokenizer.eos_token # use eos token for the purpose
+clip_processor = CLIPProcessor.from_pretrained(clip_name)
+decoder_tokenizer = AutoTokenizer.from_pretrained(decoder_name)
+
+if tokenizer.pad_token is None:
+    tokenizer.pad_token = tokenizer.eos_token
+
+model.config.decoder_start_token_id = tokenizer.bos_token_id
+model.config.pad_token_id = tokenizer.eos_token_id
+model.config.eos_token_id = tokenizer.eos_token_id
+
+model.generation_config.decoder_start_token_id = tokenizer.bos_token_id
+model.generation_config.pad_token_id = tokenizer.eos_token_id
+model.generation_config.eos_token_id = tokenizer.eos_token_id
 
 # prepare dataset
-eval_dataset = PrecomputedTensorDataset(eval_pt_path, limit_n = 0, shuffle = False, seed = 42)
+test_dataset = PrecomputedTensorDataset(test_pt_path, limit_n = 0, shuffle = False, seed = 42)
 
 # use gpu if available
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -53,7 +56,7 @@ model.to(device)
 model.eval()
 
 # Batch size can be increased depending on VRAM
-test_loader = DataLoader(eval_dataset, batch_size=8, shuffle=False, collate_fn=default_data_collator)
+test_loader = DataLoader(test_dataset, batch_size=8, shuffle=False, collate_fn=default_data_collator)
 
 all_captions = []
 
@@ -76,8 +79,8 @@ for batch in tqdm(test_loader, desc="Generating captions"):
     captions = decoder_tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
     all_captions.extend(captions)
 
-# access the labels tensor directly from the dataset object (eval_dataset.labels exists because it was defined it in __init__)
-ref_labels_tensor = eval_dataset.labels.clone()
+# access the labels tensor directly from the dataset object (test_dataset.labels exists because it was defined it in __init__)
+ref_labels_tensor = test_dataset.labels.clone()
 
 # sanitize the labels ( they contain -100 for non-text parts (like image prefix), which must be replaced with the pad_token before decoding)
 ref_labels_tensor[ref_labels_tensor == -100] = decoder_tokenizer.pad_token_id
@@ -91,23 +94,22 @@ ref_captions_text = decoder_tokenizer.batch_decode(ref_labels_tensor, skip_speci
 
 ref_captions = ref_captions_text # for readability in the rest of the script
 
-# format for BLEU (sacrebleu expects a list of lists for references)
-ref_captions_blue = [[caption] for caption in ref_captions]
+# corpus bleu wants the reference translation(s) as a list of lists, where each sublist contans 1 reference per hypothesis
+ref_captions_corpus_bleu = [[caption for caption in test_dataset["caption"]]] # for corpus bleu
+
+ref_captions_chrf = [[caption] for caption in test_dataset["caption"]] # each element must be a list of references for that hypothesis
 
 # calculate overall BLEU
-bleu = sacrebleu.corpus_bleu(all_captions, ref_captions_blue)
+bleu = sacrebleu.corpus_bleu(all_captions, ref_captions_corpus_blue)
 print(f"BLEU score: {bleu.score}")
 
 # calculate sentence-level BLEU
-bleu_per_instance = []
-for capt, ref in zip(all_captions, ref_captions):
-    score = sacrebleu.sentence_bleu(capt, [ref]) # sentence_bleu requires the reference as a list of strings
-    bleu_per_instance.append(score.score)
+bleu_per_instance = [sacrebleu.sentence_bleu(cap, [ref]) for cap, ref in zip(all_captions, ref_captions)]
 
 # ChrF++
-chrf = sacrebleu.corpus_chrf(all_captions, ref_captions_blue, word_order=True)
+chrf = sacrebleu.corpus_chrf(all_captions, ref_captions_chrf, word_order=True)
 chrf_per_instance = []
-for capt, ref in zip(all_captions, ref_captions_blue):
+for capt, ref in zip(all_captions, ref_captions_chrf):
     score = sacrebleu.sentence_chrf(capt, ref, word_order=True)
     chrf_per_instance.append(score.score)
 

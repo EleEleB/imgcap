@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from transformers import PreTrainedModel
+from transformers import PreTrainedModel, GenerationMixin
 from transformers.modeling_outputs import BaseModelOutput
 from transformers import CLIPVisionConfig
 from transformers.modeling_outputs import CausalLMOutputWithPast
@@ -14,9 +14,10 @@ class PrefixedLLMConfig:
         self.encoder = encoder.config
         self.decoder = decoder.config
 
-class PrefixedLLM(PreTrainedModel):
+class PrefixedLLM(PreTrainedModel, GenerationMixin):
     def __init__(self, encoder, decoder):
-        super().__init__(PretrainedConfig())
+        #super().__init__(PretrainedConfig())
+        super().__init__(decoder.config) # avoids bugs with generate
         self.encoder = encoder
         self.config.encoder = encoder.config
         self.decoder = decoder
@@ -35,38 +36,99 @@ class PrefixedLLM(PreTrainedModel):
     def prepare_decoder_input_ids_from_labels(self, labels: torch.Tensor):
         return shift_tokens_right(labels, self.config.pad_token_id, self.config.decoder_start_token_id)
 
-    def forward(self, input_ids=None, pixel_values=None, attention_mask=None):
+    def forward(self, input_ids=None, pixel_values=None, attention_mask=None, inputs_embeds=None, **kwargs):
+        if inputs_embeds is None: # may be passed during generation
+            if pixel_values is None and input_ids is None:
+                # raise error if neither pixel_values nor input_ids are provided
+                # this can happen if generate() fails to pass pixel_values on first step
+                raise ValueError("You have to specify either input_ids, pixel_values, or inputs_embeds")
+            
+            # encode image
+            vision_output = self.encoder(pixel_values)  # run image through the encoder
+            image_embeds = self.vision_text_proj(vision_output.last_hidden_state)  # project to LLM hidden size
 
-        vision_output = self.encoder(pixel_values)
-        image_embeds = self.vision_text_proj(vision_output.last_hidden_state)
-        image_embeds_len = image_embeds.shape[1]
-        # Embed Text
-        text_embeds = self.decoder.get_input_embeddings()(input_ids)
-        
-        # Concatenate: [Prefix; Text]
-        inputs_embeds = torch.cat([image_embeds, text_embeds], dim=1)
+            # embed text and concatenate
+            if input_ids is not None:  # because generate may call the forward without input_ids
+                text_embeds = self.decoder.get_input_embeddings()(input_ids)  # embed text tokens
+                inputs_embeds = torch.cat([image_embeds, text_embeds], dim=1)  # concatenate image prefix with text embeddings
+            else:
+                inputs_embeds = image_embeds  # only image embeddings if no input_ids
 
-        # forward pass through decoder
-        outputs = self.decoder(
-            inputs_embeds=inputs_embeds,
-            attention_mask=attention_mask,
-        )
-        logits = outputs.logits[:, image_embeds_len:]
+        # attention mask
+        if attention_mask is not None:  # works during training
+            # correct attention mask (add image prefix)
+            if input_ids is not None:
+                prefix_mask = torch.ones((attention_mask.shape[0], image_embeds.shape[1]), device=attention_mask.device)  # create mask for image prefix
+                attention_mask = torch.cat([prefix_mask, attention_mask], dim=1)  # concatenate with text mask
+            # if input_ids is None, we assume attention_mask already includes prefix or we are generating
+        else:  # may be the case during generation
+            attention_mask = torch.ones(inputs_embeds.shape[:-1], device=inputs_embeds.device)  # create full mask for all embeddings
 
-        loss = None
+        # forward through decoder
+        outputs = self.decoder(inputs_embeds=inputs_embeds, attention_mask=attention_mask, **kwargs)  # pass embeddings through LLM
+
+        if input_ids is not None:  # slice logits for training
+            logits = outputs.logits[:, image_embeds.shape[1]:]  # ignore logits for image prefix
+        else:
+            logits = outputs.logits  # use all logits during generation
 
         return CausalLMOutputWithPast(
-            loss=loss,
-            logits=logits,
-            hidden_states=outputs.hidden_states,
-            attentions=outputs.attentions,
-            past_key_values=outputs.past_key_values, # field exists in CausalLMOutputWithPast
+            loss=None,  # no loss computation in forward, handled externally
+            logits=logits,  # output logits
+            hidden_states=outputs.hidden_states,  # pass hidden states
+            attentions=outputs.attentions,  # pass attention
+            past_key_values=outputs.past_key_values  # pass past key values for caching
         )
 
+    # # this is called by model.generate() for each generation step
+    # # constructs inputs_embeds from the image prefix + input_ids
+    # def prepare_inputs_for_generation(self, input_ids=None, past=None, attention_mask=None, pixel_values=None, **kwargs):
+    #     # If inputs_embeds is already provided (e.g., from previous generation step), use it directly
+    #     if inputs_embeds is not None:
+    #         # already provided, just use it along with attention_mask and past_key_values
+    #         return {"inputs_embeds": inputs_embeds, "attention_mask": attention_mask, "past_key_values": past}
+
+    #     # encode image if pixel_values are provided
+    #     if pixel_values is not None:
+    #         vision_output = self.encoder(pixel_values)  # run image through encoder
+    #         image_embeds = self.vision_text_proj(vision_output.last_hidden_state)  # project image features to LLM hidden size
+    #     else:
+    #         image_embeds = None  # no image prefix
+
+    #     # embed text if input_ids are provided
+    #     if input_ids is not None:
+    #         text_embeds = self.decoder.get_input_embeddings()(input_ids)  # embed text tokens
+    #         if image_embeds is not None:
+    #             inputs_embeds = torch.cat([image_embeds, text_embeds], dim=1)  # concatenate image prefix + text
+    #         else:
+    #             inputs_embeds = text_embeds  # only text embeddings
+    #     else:
+    #         if image_embeds is not None:
+    #             inputs_embeds = image_embeds  # only image prefix if no text
+    #         else:
+    #             # nothing to provide, raise error
+    #             raise ValueError("You have to specify either input_ids, pixel_values, or inputs_embeds")
+
+    #     # attention mask
+    #     if attention_mask is not None:  # works during training
+    #         if input_ids is not None and image_embeds is not None:
+    #             # correct attention mask (add image prefix)
+    #             prefix_mask = torch.ones((attention_mask.shape[0], inputs_embeds.shape[1] - input_ids.shape[1]), device=attention_mask.device)
+    #             attention_mask = torch.cat([prefix_mask, attention_mask], dim=1)  # concatenate image mask + text mask
+    #         # if input_ids is None, assume attention_mask already includes prefix or we are generating
+    #     else:  # may be the case during generation
+    #         attention_mask = torch.ones(inputs_embeds.shape[:-1], device=inputs_embeds.device)  # create full mask for all embeddings
+
+    #     # return inputs in the format expected by forward()
+    #     return {
+    #         "inputs_embeds": inputs_embeds,  # combined embeddings
+    #         "attention_mask": attention_mask,  # attention mask
+    #         "past_key_values": past  # cached past_key_values for faster generation
+    #     }
+
+# shift input ids one token to the right
 def shift_tokens_right(input_ids: torch.Tensor, pad_token_id: int, decoder_start_token_id: int):
-    """
-    Shift input ids one token to the right.
-    """
+
     shifted_input_ids = input_ids.new_zeros(input_ids.shape)
     shifted_input_ids[:, 1:] = input_ids[:, :-1].clone()
     if decoder_start_token_id is None:

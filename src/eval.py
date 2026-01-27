@@ -54,18 +54,19 @@ def main(args):
         captions = [tokenizer.decode(g, skip_special_tokens=True) for g in generated_captions] # skip_special_tokens ignores padding/eos tokens
         all_captions.extend(captions)
 
-
-    ref_captions_bleu = [[caption] for caption in test_dataset["caption"]] # bleu wants the reference translation(s) as a list of lists
+    # corpus bleu wants the reference translation(s) as a list of lists, where each sublist contans 1 reference per hypothesis
+    ref_captions_corpus_bleu = [[caption for caption in test_dataset["caption"]]] # for corpus bleu
+    ref_captions_chrf = [[caption] for caption in test_dataset["caption"]] # each element must be a list of references for that hypothesis
     ref_captions = [caption for caption in test_dataset["caption"]] # for everything else
 
     # BLEU
-    bleu = sacrebleu.corpus_bleu(all_captions, ref_captions_bleu)
-    bleu_per_instance = [sacrebleu.sentence_bleu(cap, ref) for cap, ref in zip(all_captions, ref_captions_bleu)]
+    bleu = sacrebleu.corpus_bleu(all_captions, ref_captions_corpus_bleu)
+    bleu_per_instance = [sacrebleu.sentence_bleu(cap, [ref]) for cap, ref in zip(all_captions, ref_captions)]
 
     # ChrF++
-    chrf = sacrebleu.corpus_chrf(all_captions, ref_captions_bleu, word_order=True)  # word_order=True enables ChrF++
+    chrf = sacrebleu.corpus_chrf(all_captions, ref_captions_chrf, word_order=True)  # word_order=True enables ChrF++
     chrf_per_instance = []
-    for capt, ref in zip(all_captions, ref_captions_bleu):
+    for capt, ref in zip(all_captions, ref_captions_chrf):
         score = sacrebleu.sentence_chrf(capt, ref, word_order=True)
         chrf_per_instance.append(score.score)
 
@@ -122,7 +123,6 @@ def main(args):
     ref_clip_score_median = np.median(ref_clip_score_per_instance)
 
     # write to file
-    
     results = {'train_config': train_config, 'scores': {}, 'preds': []}
     results['scores'] = {
         'CLIP-Score': clip_score_median,
