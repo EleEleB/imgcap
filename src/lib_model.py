@@ -8,24 +8,36 @@ from transformers.generation.configuration_utils import GenerationConfig
 from transformers.modeling_utils import PreTrainedModel
 from transformers.configuration_utils import PretrainedConfig
 from torch.nn import CrossEntropyLoss
+import sacrebleu
+import re
+from typing import Dict, Any
+from tqdm.auto import tqdm
+import numpy as np
+import json
 
 class PrefixedLLMConfig:
     def __init__(self, encoder, decoder):
         self.encoder = encoder.config
         self.decoder = decoder.config
 
+import torch
+import torch.nn as nn
+from transformers import PreTrainedModel, GenerationMixin, GenerationConfig
+from transformers.modeling_outputs import CausalLMOutputWithPast
+
 class PrefixedLLM(PreTrainedModel, GenerationMixin):
     def __init__(self, encoder, decoder):
-        #super().__init__(PretrainedConfig())
-        super().__init__(decoder.config) # avoids bugs with generate
+        super().__init__(decoder.config)
         self.encoder = encoder
         self.config.encoder = encoder.config
         self.decoder = decoder
         self.config.decoder = decoder.config
-        # self.config = PrefixedLLMConfig(encoder, decoder)
         self.generation_config = GenerationConfig()
-        # Project visual features to LLM dimension
-        self.vision_text_proj = nn.Linear(self.encoder.config.hidden_size, self.decoder.config.hidden_size)
+
+        self.vision_text_proj = nn.Linear(
+            self.encoder.config.hidden_size,
+            self.decoder.config.hidden_size
+        )
 
     def get_input_embeddings(self):
         return self.decoder.get_input_embeddings()
@@ -34,97 +46,180 @@ class PrefixedLLM(PreTrainedModel, GenerationMixin):
         self.decoder.set_input_embeddings(value)
 
     def prepare_decoder_input_ids_from_labels(self, labels: torch.Tensor):
-        return shift_tokens_right(labels, self.config.pad_token_id, self.config.decoder_start_token_id)
+        shifted_tokens = shift_tokens_right(labels, self.config.pad_token_id, self.config.decoder_start_token_id)
+        return shifted_tokens
 
-    def forward(self, input_ids=None, pixel_values=None, attention_mask=None, inputs_embeds=None, **kwargs):
-        if inputs_embeds is None: # may be passed during generation
-            if pixel_values is None and input_ids is None:
-                # raise error if neither pixel_values nor input_ids are provided
-                # this can happen if generate() fails to pass pixel_values on first step
-                raise ValueError("You have to specify either input_ids, pixel_values, or inputs_embeds")
-            
-            # encode image
-            vision_output = self.encoder(pixel_values)  # run image through the encoder
-            image_embeds = self.vision_text_proj(vision_output.last_hidden_state)  # project to LLM hidden size
+    def encode_image(self, pixel_values):
+        vision_output = self.encoder(pixel_values)
+        return self.vision_text_proj(vision_output.last_hidden_state)  # [B, P, H]
 
-            # embed text and concatenate
-            if input_ids is not None:  # because generate may call the forward without input_ids
-                text_embeds = self.decoder.get_input_embeddings()(input_ids)  # embed text tokens
-                inputs_embeds = torch.cat([image_embeds, text_embeds], dim=1)  # concatenate image prefix with text embeddings
-            else:
-                inputs_embeds = image_embeds  # only image embeddings if no input_ids
+    def forward(
+        self,
+        input_ids=None,
+        pixel_values=None,
+        image_embeds=None,
+        attention_mask=None,
+        inputs_embeds=None,
+        past_key_values=None,
+        use_cache=None,
+        **kwargs
+    ):
+        # ---- Cached decoding step (>0): no prefix prepend ----
+        if past_key_values is not None:
+            if inputs_embeds is None:
+                if input_ids is None:
+                    raise ValueError("In cached decoding, provide input_ids or inputs_embeds.")
+                inputs_embeds = self.decoder.get_input_embeddings()(input_ids)
 
-        # attention mask
-        if attention_mask is not None:  # works during training
-            # correct attention mask (add image prefix)
-            if input_ids is not None:
-                prefix_mask = torch.ones((attention_mask.shape[0], image_embeds.shape[1]), device=attention_mask.device)  # create mask for image prefix
-                attention_mask = torch.cat([prefix_mask, attention_mask], dim=1)  # concatenate with text mask
-            # if input_ids is None, we assume attention_mask already includes prefix or we are generating
-        else:  # may be the case during generation
-            attention_mask = torch.ones(inputs_embeds.shape[:-1], device=inputs_embeds.device)  # create full mask for all embeddings
+            outputs = self.decoder(
+                inputs_embeds=inputs_embeds,
+                attention_mask=attention_mask,
+                past_key_values=past_key_values,
+                use_cache=use_cache,
+                **kwargs
+            )
+            return CausalLMOutputWithPast(
+                loss=None,
+                logits=outputs.logits,
+                past_key_values=outputs.past_key_values,
+                hidden_states=outputs.hidden_states,
+                attentions=outputs.attentions,
+            )
 
-        # forward through decoder
-        outputs = self.decoder(inputs_embeds=inputs_embeds, attention_mask=attention_mask, **kwargs)  # pass embeddings through LLM
+        # ---- First step (no cache): build prefix + text ----
+        prefix_len = 0
 
-        if input_ids is not None:  # slice logits for training
-            logits = outputs.logits[:, image_embeds.shape[1]:]  # ignore logits for image prefix
+        if inputs_embeds is None:
+            if image_embeds is None:
+                if pixel_values is None:
+                    raise ValueError("Provide pixel_values or image_embeds on the first step.")
+                image_embeds = self.encode_image(pixel_values)  # [B, P, H]
+
+            prefix_len = image_embeds.size(1)
+
+            if input_ids is None:
+                bos = torch.full(
+                    (image_embeds.size(0), 1),
+                    self.config.decoder_start_token_id,
+                    device=image_embeds.device,
+                    dtype=torch.long
+                )
+                input_ids = bos
+
+            text_embeds = self.decoder.get_input_embeddings()(input_ids)  # [B, T, H]
+            inputs_embeds = torch.cat([image_embeds, text_embeds], dim=1)  # [B, P+T, H]
         else:
-            logits = outputs.logits  # use all logits during generation
+            # If caller passes inputs_embeds directly, you must also pass a consistent attention_mask.
+            # Can't infer prefix_len reliably here.
+            prefix_len = 0
 
-        return CausalLMOutputWithPast(
-            loss=None,  # no loss computation in forward, handled externally
-            logits=logits,  # output logits
-            hidden_states=outputs.hidden_states,  # pass hidden states
-            attentions=outputs.attentions,  # pass attention
-            past_key_values=outputs.past_key_values  # pass past key values for caching
+        # Make attention_mask match inputs_embeds length
+        B, S = inputs_embeds.shape[:2]
+        if attention_mask is None:
+            attention_mask = torch.ones((B, S), device=inputs_embeds.device, dtype=torch.long)
+        elif attention_mask.size(1) != S:
+            pad_len = S - attention_mask.size(1)
+            if pad_len > 0:
+                prefix_mask = torch.ones((B, pad_len), device=attention_mask.device, dtype=attention_mask.dtype)
+                attention_mask = torch.cat([prefix_mask, attention_mask], dim=1)
+            else:
+                attention_mask = attention_mask[:, :S]
+        outputs = self.decoder(
+            inputs_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            use_cache=use_cache,
+            **kwargs
         )
 
-    # # this is called by model.generate() for each generation step
-    # # constructs inputs_embeds from the image prefix + input_ids
-    # def prepare_inputs_for_generation(self, input_ids=None, past=None, attention_mask=None, pixel_values=None, **kwargs):
-    #     # If inputs_embeds is already provided (e.g., from previous generation step), use it directly
-    #     if inputs_embeds is not None:
-    #         # already provided, just use it along with attention_mask and past_key_values
-    #         return {"inputs_embeds": inputs_embeds, "attention_mask": attention_mask, "past_key_values": past}
+        logits = outputs.logits
 
-    #     # encode image if pixel_values are provided
-    #     if pixel_values is not None:
-    #         vision_output = self.encoder(pixel_values)  # run image through encoder
-    #         image_embeds = self.vision_text_proj(vision_output.last_hidden_state)  # project image features to LLM hidden size
-    #     else:
-    #         image_embeds = None  # no image prefix
+        # IMPORTANT: during training, drop prefix positions so logits length matches labels length
+        # Condition: we actually prepended a prefix (prefix_len>0) and we have text input_ids.
+        if prefix_len > 0 and input_ids is not None:
+            logits = logits[:, prefix_len:, :]  # [B, T, V]
 
-    #     # embed text if input_ids are provided
-    #     if input_ids is not None:
-    #         text_embeds = self.decoder.get_input_embeddings()(input_ids)  # embed text tokens
-    #         if image_embeds is not None:
-    #             inputs_embeds = torch.cat([image_embeds, text_embeds], dim=1)  # concatenate image prefix + text
-    #         else:
-    #             inputs_embeds = text_embeds  # only text embeddings
-    #     else:
-    #         if image_embeds is not None:
-    #             inputs_embeds = image_embeds  # only image prefix if no text
-    #         else:
-    #             # nothing to provide, raise error
-    #             raise ValueError("You have to specify either input_ids, pixel_values, or inputs_embeds")
+        return CausalLMOutputWithPast(
+            loss=None,
+            logits=logits,
+            past_key_values=outputs.past_key_values,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+        )
 
-    #     # attention mask
-    #     if attention_mask is not None:  # works during training
-    #         if input_ids is not None and image_embeds is not None:
-    #             # correct attention mask (add image prefix)
-    #             prefix_mask = torch.ones((attention_mask.shape[0], inputs_embeds.shape[1] - input_ids.shape[1]), device=attention_mask.device)
-    #             attention_mask = torch.cat([prefix_mask, attention_mask], dim=1)  # concatenate image mask + text mask
-    #         # if input_ids is None, assume attention_mask already includes prefix or we are generating
-    #     else:  # may be the case during generation
-    #         attention_mask = torch.ones(inputs_embeds.shape[:-1], device=inputs_embeds.device)  # create full mask for all embeddings
+@torch.inference_mode()
+def greedy_generate_prefixed(
+    model,
+    pixel_values,
+    max_new_tokens=64,
+):
+    device = pixel_values.device
+    bsz = pixel_values.size(0)
 
-    #     # return inputs in the format expected by forward()
-    #     return {
-    #         "inputs_embeds": inputs_embeds,  # combined embeddings
-    #         "attention_mask": attention_mask,  # attention mask
-    #         "past_key_values": past  # cached past_key_values for faster generation
-    #     }
+    # Encode image once (projected to decoder hidden size)
+    image_embeds = model.encode_image(pixel_values)  # [B, P, H]
+    prefix_len = image_embeds.size(1)
+
+    bos_id = model.config.bos_token_id
+    if bos_id is None:
+        bos_id = getattr(model.config, "decoder_start_token_id", None)
+    if bos_id is None:
+        raise ValueError("Need bos_token_id or decoder_start_token_id in config.")
+
+    eos_id = model.config.eos_token_id
+    pad_id = model.config.pad_token_id
+    if pad_id is None:
+        pad_id = 0
+
+    # Start tokens: [B, 1]
+    generated = torch.full((bsz, 1), bos_id, dtype=torch.long, device=device)
+
+    past_key_values = None
+    finished = torch.zeros((bsz,), dtype=torch.bool, device=device)
+
+    # Step 0 attention mask covers prefix + current tokens (BOS)
+    attention_mask = torch.ones((bsz, prefix_len + generated.size(1)), dtype=torch.long, device=device)
+
+    for _ in range(max_new_tokens):
+        if past_key_values is None:
+            out = model(
+                input_ids=generated,         # BOS at start (or full prompt if you have one)
+                image_embeds=image_embeds,   # use precomputed vision prefix
+                attention_mask=attention_mask,
+                use_cache=True,
+            )
+        else:
+            out = model(
+                input_ids=generated[:, -1:],  # only last token
+                attention_mask=attention_mask,
+                past_key_values=past_key_values,
+                use_cache=True,
+            )
+
+        next_token = out.logits[:, -1, :].argmax(dim=-1, keepdim=True)
+
+        # After EOS: keep padding (or keep EOS if you prefer)
+        next_token = torch.where(
+            finished.unsqueeze(-1),
+            torch.full_like(next_token, pad_id),
+            next_token
+        )
+
+        generated = torch.cat([generated, next_token], dim=1)
+
+        # Update finished flags
+        if eos_id is not None:
+            finished = finished | (next_token.squeeze(-1) == eos_id)
+            if finished.all():
+                break
+
+        # Update cache + attention mask for next step
+        past_key_values = out.past_key_values
+        attention_mask = torch.cat(
+            [attention_mask, torch.ones((bsz, 1), dtype=attention_mask.dtype, device=device)],
+            dim=1
+        )
+
+    return generated
 
 # shift input ids one token to the right
 def shift_tokens_right(input_ids: torch.Tensor, pad_token_id: int, decoder_start_token_id: int):
@@ -149,73 +244,6 @@ def init_decoder_input_ids(eos_token_id, bos_token_id, batch_size):
     decoder_input_ids = decoder_input_ids.expand(batch_size, 2)
     return decoder_input_ids
 
-def generate(model, tokenizer, pixel_values, max_new_tokens=20, device="cuda"):
-    model.eval()
-    
-    batch_size = pixel_values.shape[0]
-
-    # 1. Initialize Empty Input
-    # We start with an empty text sequence: shape (Batch_Size, 0)
-    # The model will therefore generate the first token purely based on the image prefix.
-    input_ids = torch.zeros((batch_size, 0), dtype=torch.long, device=device)
-    attention_mask = torch.zeros((batch_size, 0), dtype=torch.long, device=device)
-    
-    pixel_values = pixel_values.to(device)
-
-    # 2. Generation Loop
-    past_key_values = None
-    
-    for _ in range(max_new_tokens):
-        with torch.no_grad():
-            # If past_key_values is provided, we feed only the last token.
-            # If it's the VERY FIRST step (input_ids is empty), we must feed the pixel_values.
-            
-            # Logic:
-            # Step 0: input_ids is (B,0). We pass pixel_values. Model sees [Image]. Output predicts T1.
-            # Step 1: input_ids becomes (B,1). We pass T1. Model sees [Image, T1] (via cache). Output predicts T2.
-            
-            if past_key_values is None:
-                # First step: The "Empty Text" pass
-                outputs = model(
-                    input_ids=input_ids,          # (B, 0)
-                    pixel_values=pixel_values,    # (B, C, H, W)
-                    attention_mask=attention_mask,# (B, 0)
-                    past_key_values=None
-                )
-            else:
-                # Subsequent steps: The "Next Token" pass
-                # We only feed the single most recent token
-                last_token = input_ids[:, -1:]    # (B, 1)
-                
-                outputs = model(
-                    input_ids=last_token,
-                    pixel_values=None,            # Not needed when using cache
-                    attention_mask=attention_mask,# Mask history is handled internally or via cache
-                    past_key_values=past_key_values
-                )
-            
-            # Get next token prediction from the last logit
-            next_token_logits = outputs.logits[:, -1, :]
-            next_token = next_token_logits.argmax(dim=-1).unsqueeze(-1)
-            
-            # Update cache
-            past_key_values = outputs.past_key_values
-            
-            # Append prediction to sequence
-            input_ids = torch.cat([input_ids, next_token], dim=1)
-            
-            # Update attention mask (append 1)
-            attention_mask = torch.cat(
-                [attention_mask, torch.ones((batch_size, 1), device=device, dtype=torch.long)], 
-                dim=1
-            )
-
-            # Optimization: Stop if ALL sequences have hit EOS (optional, but good for speed)
-            if (next_token == tokenizer.eos_token_id).all():
-                break
-                
-    return input_ids
-
 def print_trainable_parameters(model):
     for name, param in model.named_parameters():
         if param.requires_grad:
@@ -227,55 +255,110 @@ def print_params(model):
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('trainable_params', trainable_params)
 
-# define adapter
-class VisionAdapter(nn.Module):
-    def __init__(self, clip_dim, decoder_dim, reduction=4):
-        super(VisionAdapter, self).__init__()
-        self.fc = nn.Sequential(
-            nn.Linear(clip_dim, clip_dim // reduction, bias=False),
-            nn.GELU(),
-            nn.Linear(clip_dim // reduction, clip_dim, bias=False),
-            nn.GELU()
+def _norm(s: str) -> str:
+    """Normalizes string by lowering case and collapsing whitespace."""
+    s = s.lower().strip()
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+@torch.no_grad()
+def evaluate_and_save_predictions(
+    model,
+    dataloader,
+    tokenizer,
+    device,
+    output_json_path: str,
+    train_config: Dict[str, Any],
+    max_new_tokens: int = 16,
+    num_beams: int = 1,
+):
+    """
+    Performs inference on the dataloader, computes metrics, and saves results to JSON.
+    """
+    model.eval()
+    # Handle tokenizer wrapper vs direct tokenizer instance
+    tok = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
+
+    rows = []
+    all_hyps = []
+    all_refs = []
+
+    print(f"Starting evaluation on device: {device}")
+    
+    for batch_idx, batch in enumerate(tqdm(dataloader, desc="eval+save")):
+        batch = {k: v.to(device) for k, v in batch.items()}
+
+        pixel_values = batch["pixel_values"]
+        labels = batch.get("labels", None)
+
+        # Optional: Debugging block to inspect top-5 token probabilities at the first step
+        # (Retained from original snippet logic)
+        if batch_idx == 0:
+            if train_config["model_type"] != "prefix":
+                out = model(pixel_values=pixel_values)
+            else:
+                out = model(input_ids=None, pixel_values=pixel_values) # don't pass hidden states to the prefix model
+            logits = out.logits[0, -1]
+            top = torch.topk(logits, 5)
+            print("\nTop 5 initial tokens (Debug):")
+            for i in range(5):
+                print(f"Token: {tok.decode([top.indices[i].item()])}, Score: {top.values[i].item():.4f}")
+
+        # Generate captions
+        gen_ids = greedy_generate_prefixed(
+            model=model,
+            pixel_values=pixel_values,
+            max_new_tokens=max_new_tokens,
         )
+        hyp_texts = tok.batch_decode(gen_ids, skip_special_tokens=True)
 
-    def forward(self, x):
-        x = self.fc(x)
-        return x
+        # Decode references if labels exist
+        if labels is not None:
+            labels_for_decode = labels.clone()
+            # Replace -100 with pad_token_id to allow decoding
+            labels_for_decode[labels_for_decode == -100] = tok.pad_token_id
+            ref_texts = tok.batch_decode(labels_for_decode, skip_special_tokens=True)
+        else:
+            ref_texts = [None] * len(hyp_texts)
 
-# wraps clip and adapter together as an encoder
-class CLIPWithAdapter(PreTrainedModel):
-    config_class = CLIPVisionConfig  # the CLIP config is assigned automatically as part of the init
+        # Process batch results
+        for i, (hyp, ref) in enumerate(zip(hyp_texts, ref_texts)):
+            hyp_n = _norm(hyp)
+            ref_n = _norm(ref) if ref is not None else None
 
-    def __init__(self, clip_model, adapter):
-        super().__init__(clip_model.config)
-        self.clip = clip_model
-        self.adapter = adapter
+            row = {
+                "id": batch_idx * len(hyp_texts) + i,
+                "prediction": hyp,
+                "prediction_norm": hyp_n,
+                "reference": ref,
+                "reference_norm": ref_n,
+            }
 
-    # necessary or it triggers an error
-    def get_input_embeddings(self):
-        return self.clip.get_input_embeddings()
+            if ref_n is not None:
+                row["exact_match"] = (hyp_n == ref_n)
+                # Note: sacrebleu expects a list of references for each hypothesis
+                row["sentence_bleu"] = sacrebleu.sentence_bleu(hyp_n, [ref_n]).score
 
-    # vision encoders don't produce token embeddings so this is none
-    def get_output_embeddings(self):
-        return None
+                all_hyps.append(hyp_n)
+                all_refs.append(ref_n)
 
-    def forward(self, pixel_values, input_ids=None, attention_mask=None, **kwargs): # input_ids and attention_mask are required for compatibility (inherited requirement from PreTrainedModel)
-        # pass the pixel values through CLIP
-        outputs = self.clip(pixel_values=pixel_values, **kwargs)
+            rows.append(row)
 
-        # extract vision features (last_hidden_state)
-        vision_feats = outputs.last_hidden_state
+    # Compute aggregate metrics
+    metrics = {}
+    if all_hyps:
+        metrics["exact_match_acc"] = float(np.mean([r["exact_match"] for r in rows if r["reference_norm"] is not None]))
+        metrics["bleu"] = sacrebleu.corpus_bleu(all_hyps, [all_refs]).score
+        metrics["avg_sentence_bleu"] = float(np.mean([r["sentence_bleu"] for r in rows if r.get("sentence_bleu") is not None]))
 
-        # apply the vision adapter to process the features
-        #vision_feats = vision_feats.mean(dim=1, keepdim=True)  # add mean pooling
-        adapted_feats = self.adapter(vision_feats) # apply the adapter
+    # Construct payload
+    payload = {
+        "metrics": metrics,
+        "predictions": rows,
+    }
 
-        # do residual-style blending as in the CLIP-Adapter paper
-        new_feats = vision_feats + adapted_feats
+    # Save to file
+    with open(output_json_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
 
-        # return full encoder outputs (for cross-attention compatibility)
-        return BaseModelOutput(
-            last_hidden_state=new_feats,  # processed image embeddings
-            hidden_states=outputs.hidden_states,  # encoder's intermediate states
-            attentions=outputs.attentions  # attention scores (important for cross-attention)
-        )
+    return metrics, output_json_path

@@ -20,12 +20,14 @@ import os
 import json
 
 train_config = {
-    #"train_data_path": "data/gz_tensors/vit-gpt2-coco-en/train_en.pt",
-    #"eval_data_path": "data/gz_tensors/vit-gpt2-coco-en/eval_en.pt",
-    "train_data_path": "data/toy_colors_clip-vit-base-patch32.pt",
-    "eval_data_path": "data/toy_colors_clip-vit-base-patch32.pt",
+    # "train_data_path": "data/gz_tensors/vit-gpt2-coco-en/train_en.pt",
+    # "eval_data_path": "data/gz_tensors/vit-gpt2-coco-en/eval_en.pt",
+    # "train_data_path": "data/toy_colors_clip-vit-base-patch32.pt",
+    # "eval_data_path": "data/toy_colors_clip-vit-base-patch32.pt",
+    "train_data_path": "data/toy_colors_vit-gpt2-coco-en.pt",
+    "eval_data_path": "data/toy_colors_vit-gpt2-coco-en.pt",
     "num_epochs": 3,
-    "num_steps": -1, # < 0 to do the full epochs
+    "num_steps": 100, # < 0 to do the full epochs
     "learning_rate": 5e-5,
     "batch_size_train": 8,
     "batch_size_eval": 8,
@@ -41,7 +43,7 @@ model_name = "ydshieh/vit-gpt2-coco-en"
 save_model_to = f"./models/{model_name.split('/')[-1]}_{get_current_time_string()}" # path where to save the fine-tuned model
 
 # load model
-feature_extractor = ViTImageProcessor.from_pretrained(model_name)
+feature_extractor = ViTImageProcessor.from_pretrained(model_name) # NOTE: this is not used because the dataset already contains pixel values
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 
 train_dataset = PrecomputedTensorDataset(train_config['train_data_path'], limit_n=0, shuffle = True, seed = 42)

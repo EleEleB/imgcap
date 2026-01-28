@@ -50,9 +50,8 @@ for split in ['train', 'eval', 'test']:
             p_values = img_processor(images=image, return_tensors="pt").pixel_values[0]
             
             # NOTE: here we need to add the eos token. the tokenizer won't do it on its own
-            caption = example["caption"]
-            if encoder_name == 'ydshieh/vit-gpt2-coco-en': 
-                caption = caption + tokenizer.eos_token
+            # if encoder_name == 'ydshieh/vit-gpt2-coco-en': 
+            caption = example["caption"] + tokenizer.eos_token
             
             encodings = tokenizer(
                 caption, 
@@ -69,7 +68,7 @@ for split in ['train', 'eval', 'test']:
             pixel_values_list.append(p_values)
             labels_list.append(labels)
             attn_mask_list.append(attn_mask)
-
+        
         except Exception as e:
             print(f"Error processing {example['image_path']}: {e}")
             continue

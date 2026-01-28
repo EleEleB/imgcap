@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 from transformers import AutoTokenizer, AutoImageProcessor
+from transformers import CLIPProcessor, AutoTokenizer, ViTImageProcessor
 
 COLOR_MAP = {
     "red":   (255, 0, 0),
@@ -13,8 +14,21 @@ COLOR_MAP = {
     "magenta": (255, 0, 255),
 }
 
-#model_name = "ydshieh/vit-gpt2-coco-en"
-model_name = "openai/clip-vit-base-patch32"
+encoder_name = "openai/clip-vit-base-patch32"
+#encoder_name = "ydshieh/vit-gpt2-coco-en"
+
+# initialize processors
+print("Initializing processors...")
+if encoder_name == 'openai/clip-vit-base-patch32':
+    img_processor = CLIPProcessor.from_pretrained(encoder_name)
+    decoder_name = "ai-forever/mGPT"
+    lang = "it"
+elif encoder_name == 'ydshieh/vit-gpt2-coco-en':
+    img_processor = ViTImageProcessor.from_pretrained(encoder_name)
+    decoder_name = encoder_name
+    lang = "en"
+
+model_combo = f"{encoder_name.split('/')[-1]}_{decoder_name.split('/')[-1]}"
 
 def make_color_image_np(color_name: str, size: int = 224) -> np.ndarray:
     rgb = np.array(COLOR_MAP[color_name], dtype=np.uint8)
@@ -26,20 +40,19 @@ def build_toy_color_dataset(
     image_size: int = 224,
     max_length: int = 16,
 ):
-    image_processor = AutoImageProcessor.from_pretrained(model_name)
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer = AutoTokenizer.from_pretrained(decoder_name)
 
     # pad token for batching
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-
+    tokenizer.padding_side = 'right'
     pixel_values_list, labels_list, dec_attn_mask_list = [], [], []
 
     for color in COLOR_MAP:
         caption = f"a {color} square" + tokenizer.eos_token
         for _ in range(N_per_color):
             img = make_color_image_np(color, size=image_size)
-            pv = image_processor(images=img, return_tensors="pt").pixel_values[0]
+            pv = img_processor(images=img, return_tensors="pt").pixel_values[0]
 
             tok = tokenizer(
                 caption,
@@ -68,4 +81,4 @@ def build_toy_color_dataset(
     return tensor_data
 
 if __name__ == "__main__":
-    build_toy_color_dataset(5, f"data/toy_colors_{model_name.split('/')[-1]}.pt", 224, 16)
+    build_toy_color_dataset(5, f"data/toy_colors_{model_combo}.pt", 224, 16)

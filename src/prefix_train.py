@@ -21,8 +21,8 @@ from lib_model import PrefixedLLM
 train_config = {
     # "train_data_path": "data/gz_tensors/clip-vit-base-patch32_mGPT/train_en.pt",
     # "eval_data_path": "data/gz_tensors/clip-vit-base-patch32_mGPT/eval_en.pt",
-    "train_data_path": "data/toy_colors_clip-vit-base-patch32.pt",
-    "eval_data_path": "data/toy_colors_clip-vit-base-patch32.pt",
+    "train_data_path": "data/toy_colors_clip-vit-base-patch32_mGPT.pt",
+    "eval_data_path": "data/toy_colors_clip-vit-base-patch32_mGPT.pt",
     'encoder_name': "openai/clip-vit-base-patch32", # English only, but if only used for image it's language-independent
     'decoder_name': "ai-forever/mGPT", # multilingual
     "num_epochs": 3,
@@ -67,7 +67,7 @@ print_params(model)
 
 if tokenizer.pad_token is None:
     tokenizer.pad_token = tokenizer.eos_token
-
+tokenizer.padding_side = 'right'
 model.config.decoder_start_token_id = tokenizer.bos_token_id
 model.config.pad_token_id = tokenizer.eos_token_id
 model.config.eos_token_id = tokenizer.eos_token_id
@@ -76,7 +76,6 @@ model.config.vocab_size = model.config.decoder.vocab_size
 model.generation_config.decoder_start_token_id = tokenizer.bos_token_id
 model.generation_config.pad_token_id = tokenizer.eos_token_id
 model.generation_config.eos_token_id = tokenizer.eos_token_id
-
 
 train_loader = DataLoader(train_dataset, batch_size=train_config['batch_size_train'], shuffle=True, collate_fn=default_data_collator)
 eval_loader = DataLoader(eval_dataset, batch_size=train_config['batch_size_eval'], shuffle=False, collate_fn=default_data_collator)
@@ -115,12 +114,11 @@ for step in range(train_config['num_steps']):
     # Labels: [A, B, C, EOS] -> Decoder_Input: [EOS, A, B, C]
     labels = batch['labels'] # Shape: [batch, seq_len]
     decoder_input_ids = model.prepare_decoder_input_ids_from_labels(labels)
-    
     # 2. Forward Pass (NO LABELS)
     outputs = model(
         pixel_values=batch['pixel_values'],
         input_ids=decoder_input_ids,
-        attention_mask=batch.get('attention_mask', None), # Optional if using default collator
+        attention_mask=batch.get('decoder_attention_mask', None), # Optional if using default collator
     )
     
     # 3. Manual Loss Calculation
@@ -134,7 +132,6 @@ for step in range(train_config['num_steps']):
     # Labels: (Batch * Seq_Len)
     # compute loss
     loss = loss_fct(logits.reshape(-1, logits.size(-1)), labels.reshape(-1))
-
     # backpropagation
     loss.backward()
     optimizer.step()
