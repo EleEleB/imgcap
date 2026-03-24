@@ -337,7 +337,8 @@ def evaluate_and_save_predictions(
             if ref_n is not None:
                 row["exact_match"] = (hyp_n == ref_n)
                 # Note: sacrebleu expects a list of references for each hypothesis
-                row["sentence_bleu"] = sacrebleu.sentence_bleu(hyp_n, [ref_n]).score
+                #row["sentence_bleu"] = sacrebleu.sentence_bleu(hyp_n, [ref_n]).score
+                row["sentence_chrf++"] = sacrebleu.sentence_chrf(capt, ref, word_order=True).score
 
                 all_hyps.append(hyp_n)
                 all_refs.append(ref_n)
@@ -347,9 +348,10 @@ def evaluate_and_save_predictions(
     # Compute aggregate metrics
     metrics = {}
     if all_hyps:
-        metrics["exact_match_acc"] = float(np.mean([r["exact_match"] for r in rows if r["reference_norm"] is not None]))
-        metrics["bleu"] = sacrebleu.corpus_bleu(all_hyps, [all_refs]).score
-        metrics["avg_sentence_bleu"] = float(np.mean([r["sentence_bleu"] for r in rows if r.get("sentence_bleu") is not None]))
+        #metrics["exact_match_acc"] = float(np.mean([r["exact_match"] for r in rows if r["reference_norm"] is not None]))
+        #metrics["bleu"] = sacrebleu.corpus_bleu(all_hyps, [all_refs]).score
+        #metrics["avg_sentence_bleu"] = float(np.mean([r["sentence_bleu"] for r in rows if r.get("sentence_bleu") is not None]))
+        metrics["chrf++"] = chrf = sacrebleu.corpus_chrf(all_hyps, [[ref] for ref in all_refs], word_order=True)
 
     # Construct payload
     payload = {

@@ -1,6 +1,6 @@
 import torch
 from torch.utils.data import DataLoader
-from transformers import AutoTokenizer, default_data_collator
+from transformers import AutoModel, AutoTokenizer, default_data_collator
 from transformers import VisionEncoderDecoderModel, ViTImageProcessor
 from tqdm import tqdm
 import sacrebleu
@@ -12,17 +12,19 @@ from lib_data_utils import prepare_dataset
 import json
 import argparse
 import os
+from bert_score import score
 
 lang = "en" # en
 test_dataset_path = f"./data/test_{lang}.txt"
 
 def main(args):
     model_name = args.model
+    print(f"Evaluating model: {model_name}")
 
-    train_config_path = os.path.join(model_name, 'train_config.json')
-    
-    with open(train_config_path, 'r', encoding='utf8') as f:
-        train_config = json.load(f)
+    # train_config_path = os.path.join(model_name, 'train_config.json')
+
+    # with open(train_config_path, 'r', encoding='utf8') as f:
+    #     train_config = json.load(f)
 
     # load model
     feature_extractor = ViTImageProcessor.from_pretrained(model_name)
@@ -55,20 +57,20 @@ def main(args):
         all_captions.extend(captions)
 
     # corpus bleu wants the reference translation(s) as a list of lists, where each sublist contans 1 reference per hypothesis
-    ref_captions_corpus_bleu = [[caption for caption in test_dataset["caption"]]] # for corpus bleu
+    #ref_captions_corpus_bleu = [[caption for caption in test_dataset["caption"]]] # for corpus bleu
     ref_captions_chrf = [[caption] for caption in test_dataset["caption"]] # each element must be a list of references for that hypothesis
     ref_captions = [caption for caption in test_dataset["caption"]] # for everything else
 
-    # BLEU
-    bleu = sacrebleu.corpus_bleu(all_captions, ref_captions_corpus_bleu)
-    bleu_per_instance = [sacrebleu.sentence_bleu(cap, [ref]) for cap, ref in zip(all_captions, ref_captions)]
+    # # BLEU
+    # bleu = sacrebleu.corpus_bleu(all_captions, ref_captions_corpus_bleu)
+    # bleu_per_instance = [sacrebleu.sentence_bleu(cap, [ref]) for cap, ref in zip(all_captions, ref_captions)]
 
     # ChrF++
     chrf = sacrebleu.corpus_chrf(all_captions, ref_captions_chrf, word_order=True)  # word_order=True enables ChrF++
     chrf_per_instance = []
     for capt, ref in zip(all_captions, ref_captions_chrf):
-        score = sacrebleu.sentence_chrf(capt, ref, word_order=True)
-        chrf_per_instance.append(score.score)
+        c_score = sacrebleu.sentence_chrf(capt, ref, word_order=True)
+        chrf_per_instance.append(c_score.score)
 
     # CLIP-Score & Ref-CLIP-Score
     clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(device)
@@ -122,31 +124,66 @@ def main(args):
     clip_score_median = np.median(clip_score_per_instance)
     ref_clip_score_median = np.median(ref_clip_score_per_instance)
 
-    # write to file
-    results = {'train_config': train_config, 'scores': {}, 'preds': []}
-    results['scores'] = {
-        'CLIP-Score': clip_score_median,
-        'Ref-CLIP-Score': ref_clip_score_median,
-        'Sacrebleu': bleu.score,
-        'ChrF++': chrf.score,
-        }
-    for i, (gen_capt, ref_capt, sim, ref_sim, bleuscore, chrfscore) in enumerate(zip(all_captions, ref_captions, clip_score_per_instance, ref_clip_score_per_instance, bleu_per_instance, chrf_per_instance)):
-        results['preds'].append({
-            'Instance': i,
-            'GeneratedCaption': str(gen_capt),
-            'ReferenceCaption': str(ref_capt),
-            'CLIP-Score': str(sim),
-            'RefCLIP-Score': str(ref_sim),
-            'Sacrebleu': str(bleuscore),
-            'CharF++': str(chrfscore),
-        })
+    # load and save model (base model) -- this workaround is necessary due to permission issues
+    base_bert_name = "google-bert/bert-base-uncased"
+    batch_size_bertscore = 64
+    #cache_folder = "./tmp"
+    #base_bert_tokenizer = AutoTokenizer.from_pretrained(base_bert_name, cache_dir=cache_folder)
+    #base_bert_model = AutoModel.from_pretrained(base_bert_name, cache_dir=cache_folder)
+    base_bert_model = AutoModel.from_pretrained(base_bert_name)
+    #base_model_folder = "./tmp/base_bert_it"
+    #base_bert_model.save_pretrained(base_model_folder)
+    #base_bert_tokenizer.save_pretrained(base_model_folder)
+    # base_bert_model.to(device).eval()
 
-    output_scores_filepath = (f"results/{model_name.split('/')[-1]}_scores.json")
+    # calculate bertscore (base model)
+    num_layers = base_bert_model.config.num_hidden_layers
+    base_P, base_R, base_F1 = score(all_captions, ref_captions, model_type=base_bert_name, num_layers=num_layers, lang=None, batch_size=batch_size_bertscore, device=device, verbose=True)
+    base_bert_f1_list = base_F1.tolist()
+    base_bert_score_median = np.median(base_bert_f1_list)
 
-    with open(output_scores_filepath, 'w', encoding='utf8') as f:
-        json.dump(results, f, ensure_ascii = False, indent = 4)
+    # # write to file
+    # results = {'train_config': train_config, 'scores': {}, 'preds': []}
+    # results['scores'] = {
+    #     'CLIP-Score': clip_score_median,
+    #     'Ref-CLIP-Score': ref_clip_score_median,
+    #     #'Sacrebleu': bleu.score,
+    #     'ChrF++': chrf.score,
+    #     }
+    # for i, (gen_capt, ref_capt, sim, ref_sim, chrfscore) in enumerate(zip(all_captions, ref_captions, clip_score_per_instance, ref_clip_score_per_instance, chrf_per_instance)):
+    #     results['preds'].append({
+    #         'Instance': i,
+    #         'GeneratedCaption': str(gen_capt),
+    #         'ReferenceCaption': str(ref_capt),
+    #         'CLIP-Score': str(sim),
+    #         'RefCLIP-Score': str(ref_sim),
+    #         #'Sacrebleu': str(bleuscore),
+    #         'CharF++': str(chrfscore),
+    #     })
 
-    print(f'Scores saved to: {output_scores_filepath}')
+    # output_scores_filepath = (f"results/{model_name.split('/')[-1]}_scores.json")
+
+    # with open(output_scores_filepath, 'w', encoding='utf8') as f:
+    #     json.dump(results, f, ensure_ascii = False, indent = 4)
+
+    # print(f'Scores saved to: {output_scores_filepath}')
+
+    # write to txt file
+    output_scores_filepath = (f"results/{model_name.split('/')[-1]}_scores.txt")
+    with open(output_scores_filepath, mode="w", encoding="utf-8") as f:
+        # write overall scores
+        f.write(f"OVERALL SCORE\n")
+        f.write(f"CLIP-Score\tRef-CLIP-Score\tChrF++\tBERTScore (Baseline)\n")
+        f.write(f"{clip_score_median}\t{ref_clip_score_median}\t{chrf.score}\t{base_bert_score_median}\n")
+
+        f.write(f"SCORE PER INSTANCE\n")
+        f.write(f"Instance\tGeneratedCaption\tReferenceCaption\tCLIP-Score\tRefCLIP-Score\tCharF++\tBERTScore (Baseline)\n")
+        
+        # write scores per instance
+        for i, (gen_capt, ref_capt, sim, ref_sim, chrfscore, base_bscore) in enumerate(zip(all_captions, ref_captions, clip_score_per_instance, ref_clip_score_per_instance, chrf_per_instance, base_bert_f1_list)):
+            f.write(f"{i+1}\t{gen_capt}\t{ref_capt}\t{sim}\t{ref_sim}\t{chrfscore}\t{base_bscore}\n")
+
+    print("file saved")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="An evaluation program for GialloZafferano captioning with an encoder-decoder Transformer model")

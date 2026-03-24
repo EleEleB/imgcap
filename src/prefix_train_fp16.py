@@ -18,6 +18,7 @@ import os
 import json
 from lib_model import PrefixedLLM
 import copy
+from torch.cuda.amp import autocast, GradScaler # used to set up mixed precision
 
 train_config = {
     "train_data_path": "data/gz_tensors/clip-vit-base-patch32_mGPT/train_it.pt",
@@ -82,6 +83,8 @@ optimizer = AdamW(params = model.parameters(), lr = train_config['learning_rate'
 loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
 train_iter = iter(train_loader)
 
+scaler = GradScaler() # for mixed precision
+
 if train_config['num_steps'] < 0:
     train_config['num_steps'] = len(train_dataset) * train_config['num_epochs']
 
@@ -114,26 +117,29 @@ for step in range(train_config['num_steps']):
     labels = batch['labels'] # Shape: [batch, seq_len]
     decoder_input_ids = model.prepare_decoder_input_ids_from_labels(labels)
     # 2. Forward Pass (NO LABELS)
-    outputs = model(
-        pixel_values=batch['pixel_values'],
-        input_ids=decoder_input_ids,
-        attention_mask=batch.get('decoder_attention_mask', None), # Optional if using default collator
-    )
+    with autocast(): # mixed precision
+        outputs = model(
+            pixel_values=batch['pixel_values'],
+            input_ids=decoder_input_ids,
+            attention_mask=batch.get('decoder_attention_mask', None), # Optional if using default collator
+        )
+        
+        # 3. Manual Loss Calculation
+        logits = outputs.logits  # Shape: [batch, seq_len, vocab_size]
     
-    # 3. Manual Loss Calculation
-    logits = outputs.logits  # Shape: [batch, seq_len, vocab_size]
+        # Verify Alignment:
+        # logits[0] (from EOS) predicts labels[0] ('a') -> Correct
     
-    # Verify Alignment:
-    # logits[0] (from EOS) predicts labels[0] ('a') -> Correct
-    
-    # Flatten for CrossEntropy
-    # Logits: (Batch * Seq_Len, Vocab)
-    # Labels: (Batch * Seq_Len)
-    # compute loss
-    loss = loss_fct(logits.reshape(-1, logits.size(-1)), labels.reshape(-1))
+        # Flatten for CrossEntropy
+        # Logits: (Batch * Seq_Len, Vocab)
+        # Labels: (Batch * Seq_Len)
+        # compute loss
+        loss = loss_fct(logits.reshape(-1, logits.size(-1)), labels.reshape(-1))
+
     # backpropagation
-    loss.backward()
-    optimizer.step()
+    scaler.scale(loss).backward()
+    scaler.step(optimizer)
+    scaler.update()
 
     # progress update
     tbar.set_description(f"Loss: {loss.item():.3f}")
@@ -151,14 +157,15 @@ for step in range(train_config['num_steps']):
                 labels = batch["labels"]
                 decoder_input_ids = model.prepare_decoder_input_ids_from_labels(labels)
 
-                outputs = model(
-                    pixel_values=batch["pixel_values"],
-                    input_ids=decoder_input_ids,
-                    attention_mask=batch.get("attention_mask", None),
-                )
+                with autocast(): # mixed precision
+                    outputs = model(
+                        pixel_values=batch["pixel_values"],
+                        input_ids=decoder_input_ids,
+                        attention_mask=batch.get("attention_mask", None),
+                    )
 
-                logits = outputs.logits
-                loss = loss_fct(logits.reshape(-1, logits.size(-1)), labels.reshape(-1))
+                    logits = outputs.logits
+                    loss = loss_fct(logits.reshape(-1, logits.size(-1)), labels.reshape(-1))
 
                 val_loss += loss.item()
                 n_batches += 1

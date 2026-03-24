@@ -46,6 +46,7 @@ def build_toy_color_dataset(
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = 'right'
+    
     pixel_values_list, labels_list, dec_attn_mask_list = [], [], []
 
     for color in COLOR_MAP:
@@ -70,7 +71,7 @@ def build_toy_color_dataset(
             pixel_values_list.append(pv)
             labels_list.append(labels)
             dec_attn_mask_list.append(dec_mask)
-
+            import pdb;pdb.set_trace()
     tensor_data = {
         "pixel_values": torch.stack(pixel_values_list),
         "labels": torch.stack(labels_list),

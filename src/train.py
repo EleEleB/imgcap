@@ -18,16 +18,17 @@ from lib_sys_utils import get_current_time_string
 from lib_model import print_params, print_trainable_parameters
 import os
 import json
+import copy
 
 train_config = {
-    # "train_data_path": "data/gz_tensors/vit-gpt2-coco-en/train_en.pt",
-    # "eval_data_path": "data/gz_tensors/vit-gpt2-coco-en/eval_en.pt",
+    "train_data_path": "data/gz_tensors/vit-gpt2-coco-en/train_en.pt",
+    "eval_data_path": "data/gz_tensors/vit-gpt2-coco-en/eval_en.pt",
     # "train_data_path": "data/toy_colors_clip-vit-base-patch32.pt",
     # "eval_data_path": "data/toy_colors_clip-vit-base-patch32.pt",
-    "train_data_path": "data/toy_colors_vit-gpt2-coco-en.pt",
-    "eval_data_path": "data/toy_colors_vit-gpt2-coco-en.pt",
-    "num_epochs": 3,
-    "num_steps": 100, # < 0 to do the full epochs
+    # "train_data_path": "data/toy_colors_vit-gpt2-coco-en.pt",
+    # "eval_data_path": "data/toy_colors_vit-gpt2-coco-en.pt",
+    "num_epochs": 5,
+    "num_steps": -1, # < 0 to do the full epochs
     "learning_rate": 5e-5,
     "batch_size_train": 8,
     "batch_size_eval": 8,
@@ -84,6 +85,7 @@ tbar = tqdm(total=train_config['num_steps']) # progress bar
 # evaluation and early stopping
 eval_every = train_config['num_steps'] // train_config['num_epochs'] # validate once per epoch
 best_val_loss = float("inf")
+best_state_dict = None
 bad_evals = 0
 patience = 2
 os.makedirs(save_model_to, exist_ok=True) # create the folder where to save the model
@@ -169,11 +171,10 @@ for step in range(train_config['num_steps']):
             best_val_loss = val_loss
             bad_evals = 0
 
-            # Save the best model so far
-            # save model and clip_processor + tokenizer
-            model.save_pretrained(save_model_to)
-            feature_extractor.save_pretrained(save_model_to)
-            tokenizer.save_pretrained(save_model_to)
+            # set aside the best model so far
+            best_state_dict = copy.deepcopy(model.state_dict())
+            print("model set aside for saving")
+
         else:
             bad_evals += 1
             if bad_evals >= patience:
@@ -181,9 +182,17 @@ for step in range(train_config['num_steps']):
                 break
 
 
+# restore best model
+if best_state_dict is not None:
+    model.load_state_dict(best_state_dict)
+
+# save model
+model.save_pretrained(save_model_to)
+feature_extractor.save_pretrained(save_model_to)
+tokenizer.save_pretrained(save_model_to)
+
 print(f"model saved at: {save_model_to}") # DEBUGGING
 
 json_path = os.path.join(save_model_to, 'train_config.json')
-
 with open(json_path, 'w', encoding='utf8') as f:
     json.dump(train_config, f, ensure_ascii = False, indent = 4)

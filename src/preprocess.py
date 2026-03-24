@@ -9,8 +9,8 @@ import random
 dataset_path = r"./data/gz_dataset" # ./ works on both windows and linux
 #dataset_path = r"./gz_initial_tests" # for testing -----------------------------------------------------------------------------------------------------------
 
-# lang = "en"
-lang = "it"
+lang = "en"
+#lang = "it"
 
 duplicates_either = False # True: deletes img-caption pair if either is duplicate; False: deletes pair only if both are duplicates
 
@@ -205,14 +205,14 @@ print(f"Final Number of Instances: {len(dataset_final)}")
 random.seed(42)
 random.shuffle(dataset_final)
 
-training_percent = 90 # percentage of instances to use for training, the rest is for testing
-eval_percent = 5
-upto_train = round(len(dataset_final)/100*training_percent)
-upto_eval = round(len(dataset_final)/100*(training_percent + eval_percent))
+training_percent = 85 # percentage of instances to use for training
+eval_percent = 5 # percentage of instances to use for validation, (the remaining % is for testing)
+upto_train = round(len(dataset_final) * training_percent / 100)
+upto_eval = round(len(dataset_final) * (training_percent + eval_percent) / 100)
 
-dataset_train = dataset_final[:upto_train+1]
-dataset_eval = dataset_final[upto_train+1:upto_eval+1]
-dataset_test = dataset_final[upto_eval+1:]
+dataset_train = dataset_final[:upto_train]
+dataset_eval = dataset_final[upto_train:upto_eval]
+dataset_test = dataset_final[upto_eval:]
 
 print(f"Number of Training Instances: {len(dataset_train)}")
 print(f"Number of Eval Instances: {len(dataset_eval)}")

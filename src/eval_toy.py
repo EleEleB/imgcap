@@ -14,20 +14,17 @@ from lib_model import PrefixedLLM, evaluate_and_save_predictions
 
 
 def main():
-    # --- Configuration for Toy Setting ---
     CONFIG = {
-        # "data_path": "data/toy_colors.pt",
-        # "data_path": "data/toy_colors_vit-gpt2-coco-en.pt",
-        "data_path": "data/toy_colors_clip-vit-base-patch32_mGPT.pt",
+        "data_path": "",
         "batch_size_eval": 8,
         "output_file": "eval_predictions.json",
         "device": "cuda" if torch.cuda.is_available() else "cpu",
-        "max_new_tokens": 16,
+        "max_new_tokens": 64,
         "num_beams": 1,
     }
 
-    # model_path = "./models/vit-gpt2-coco-en_2026-01-28--13-21-10" # enc-dec
-    model_path = "./models/clip-vit-base-patch32_mGPT_2026-01-28--16-23-33" # prefix
+    #model_path = "./models/vit-gpt2-coco-en_2026-01-29--14-15-26" # enc-dec
+    model_path = "./models/clip-vit-base-patch32_mGPT_2026-01-29--18-51-32" # prefix
 
     train_config_path = os.path.join(model_path, 'train_config.json')
 
@@ -40,7 +37,8 @@ def main():
 
     if train_config['model_type'] == 'encoder-decoder':
         model = VisionEncoderDecoderModel.from_pretrained(model_path)
-        CONFIG["data_path"] = "./data/toy_colors_vit-gpt2-coco-en.pt"
+        #CONFIG["data_path"] = "./data/toy_colors_vit-gpt2-coco-en.pt"
+        CONFIG["data_path"] = ".data_path": "data/gz_tensors/vit-gpt2-coco-en/test_en.pt"
     elif train_config['model_type'] == 'prefix':
         # reinstantiate custom model
         clip_name = "openai/clip-vit-base-patch32" # English only, but if only used fsor image it's language-independent
@@ -48,7 +46,8 @@ def main():
         clip_encoder = CLIPVisionModel.from_pretrained(clip_name, attn_implementation="eager")
         decoder = AutoModelForCausalLM.from_pretrained(decoder_name, attn_implementation="eager")
         # model = PrefixedLLM.from_pretrained(model_path)
-        CONFIG["data_path"] = "./data/toy_colors_clip-vit-base-patch32_mGPT.pt"
+        #CONFIG["data_path"] = "./data/toy_colors_clip-vit-base-patch32_mGPT.pt"
+        CONFIG["data_path"] = ".data_path": "data/gz_tensors/clip-vit-base-patch32_mGPT/test_it.pt"
         model = PrefixedLLM(encoder=clip_encoder, decoder=decoder)
 
         # load model weights from checkpoint

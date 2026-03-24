@@ -29,9 +29,13 @@ if tokenizer.pad_token is None:
 
 # preprocess dataset only once and save them as tensors to speed up loading during training
 for split in ['train', 'eval', 'test']:
-    dataset_path = f"./data/{split}_{lang}.txt"
-    
+    dataset_path = f"./data/{split}_{lang}.txt"  
     output_path = f"./data/gz_tensors/{model_combo}/{split}_{lang}.pt"
+
+    if split == "train" or split == "eval":
+        tokenizer.padding_side = 'right'
+    else:
+        tokenizer.padding_side = 'left'
 
     # load raw data
     print(f"Loading raw data from {dataset_path}...")
@@ -68,7 +72,8 @@ for split in ['train', 'eval', 'test']:
             pixel_values_list.append(p_values)
             labels_list.append(labels)
             attn_mask_list.append(attn_mask)
-        
+
+            #import pdb;pdb.set_trace()
         except Exception as e:
             print(f"Error processing {example['image_path']}: {e}")
             continue
